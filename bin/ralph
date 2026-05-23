@@ -400,10 +400,14 @@ iterate_once() {
     prompt=$(build_prompt "$prd_dir" "$prd_dir/issues")
   fi
 
-  local result
-  result=$($CLAUDE_CMD --effort low --model sonnet --dangerously-skip-permissions -p "$prompt" 2>&1)
-  local rc=$?
-  echo "$result"
+  local result rc
+  local _out_tmp
+  _out_tmp=$(mktemp)
+  # Stream live to the terminal while also capturing for promise detection.
+  $CLAUDE_CMD --effort low --model sonnet --dangerously-skip-permissions -p "$prompt" 2>&1 \
+    | tee "$_out_tmp"
+  rc=${PIPESTATUS[0]}
+  result=$(cat "$_out_tmp"); rm -f "$_out_tmp"
   if [ $rc -ne 0 ]; then
     echo "ralph: claude invocation failed (rc=$rc)" >&2
     return 1
