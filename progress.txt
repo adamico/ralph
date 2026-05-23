@@ -1,0 +1,1 @@
+02-scaffold: Added bin/ralph (verbatim copy of ~/.local/bin/ralph), MIT LICENSE, and install.sh that drops the script into $PREFIX/bin (default ~/.local/bin). Smoke-tested ralph usage output and bash syntax of both scripts.

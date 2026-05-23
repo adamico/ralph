@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# ralph — Ralph Wiggum loop for AFK Claude Code runs.
+# Drains issues per ADR-0015 priority rules; overridable via .ralph.conf.
+set -uo pipefail
+
+usage() {
+  cat <<EOF
+Usage:
+  ralph once          # one iteration
+  ralph run <N>       # up to N iterations, halts on COMPLETE/BLOCKED
+  ralph status        # inspect running iterations + suspicious processes
+  ralph kill          # pkill ralph + stop sandbox
+EOF
+  exit 1
+}
+
+# Threshold (seconds CPU time) above which a sandbox child process is
+# flagged as suspicious — typical hung dragonruby/lint runs.
+STUCK_CPU_SECS="${STUCK_CPU_SECS:-180}"
+
+# --- defaults ---------------------------------------------------------
+CLAUDE_CMD="claude"
+MARKER_FILE=".scratch/ACTIVE"
+TEST_CMD="./run_tests"
+LINT_CMD="/lint"
+
+pick_next_issue() {
+  # ADR-0015: lowest filename with 'Status: ready' AND every Blocked-by
+  # is 'Status: done'. Echoes path or empty. Sets ALL_BLOCKED=1 if
+  # unfinished issues remain but none pickable.
+  local prd_dir="$1"
+  local issues_dir="$prd_dir/issues"
+  ALL_BLOCKED=0
+  local any_unfinished=0 pick=""
+  for f in "$issues_dir"/*.md; do
+    [ -e "$f" ] || continue
+    local status
+    status=$(grep -m1 '^Status:' "$f" | awk '{print $2}')
+    [ "$status" = "done" ] && continue
+    any_unfinished=1
+    [ "$status" = "ready" ] || continue
+    local bbline deps_ok=1
+    bbline=$(grep -m1 '^Blocked-by:' "$f" | sed 's/^Blocked-by:[[:space:]]*//')
+    if [ -n "$bbline" ]; then
+      IFS=',' read -ra deps <<< "$bbline"
+      for d in "${deps[@]}"; do
+        d=$(echo "$d" | tr -d '[:space:]')
+        [ -z "$d" ] && continue
+        local dep_file="$issues_dir/$d.md"
+        if [ ! -f "$dep_file" ] || ! grep -q '^Status: done' "$dep_file"; then
+          deps_ok=0; break
+        fi
+      done
+    fi
+    if [ "$deps_ok" = 1 ]; then pick="$f"; break; fi
+  done
+  if [ -z "$pick" ] && [ "$any_unfinished" = 1 ]; then ALL_BLOCKED=1; fi
+  echo "$pick"
+}
+
+build_prompt() {
+  local prd_dir="$1" issues_dir="$2"
+  cat <<EOF
+@$prd_dir/PRD.md @$issues_dir @progress.txt
+
+Follow these priority rules (ADR-0015 style). Do not ask questions — act.
+
+1. Scan $issues_dir/*.md headers. Pick the next issue: lowest filename
+   whose 'Status: ready' AND every entry in 'Blocked-by:' is 'Status: done'.
+2. If no such issue exists but unfinished issues remain (all blocked),
+   output <promise>BLOCKED</promise> and stop.
+3. If every issue has 'Status: done', clear $MARKER_FILE (write empty
+   file) and output <promise>COMPLETE</promise>.
+4. Otherwise implement the picked issue. Run tests via: $TEST_CMD
+   Run $LINT_CMD.
+5. On success: set its header 'Status: done', append a one-paragraph
+   entry to progress.txt, commit (issue file + code + progress).
+6. On failure (tests red, lint cannot pass, you give up): 'git stash -u',
+   edit the issue header to 'Status: blocked' and add a 'Blocked-reason:'
+   line, commit just that header change with a [blocked] prefix. Do not
+   commit the stashed work.
+EOF
+}
+
+# --- load project config ---------------------------------------------
+SANDBOX_NAME=""
+[ -f ./.ralph.conf ] && . ./.ralph.conf
+
+# Auto-derive sandbox name from CLAUDE_CMD if not set: `sbx run <name>` or
+# `sbx run claude --` (default name pattern is claude-<workdir>).
+if [ -z "$SANDBOX_NAME" ] && [[ "$CLAUDE_CMD" == *"sbx run"* ]]; then
+  arg=$(echo "$CLAUDE_CMD" | awk '{for (i=1;i<=NF;i++) if ($i=="run") {print $(i+1); exit}}')
+  if [ "$arg" = "claude" ] || [ -z "$arg" ]; then
+    SANDBOX_NAME="claude-$(basename "$PWD")"
+  else
+    SANDBOX_NAME="$arg"
+  fi
+fi
+
+cmd_status() {
+  # sbx exec attaches to the terminal and leaves it in raw mode (no
+  # ONLCR), so any later echo stair-steps. Capture sandbox output
+  # first, restore tty, THEN print.
+  local host_ps sbx_out=""
+  host_ps=$(pgrep -fl 'ralph (once|run)|afk-ralph' || echo "(none)")
+  if [ -n "$SANDBOX_NAME" ]; then
+    sbx_out=$(sbx exec "$SANDBOX_NAME" -- ps -eo pid,etime,time,comm,args </dev/null 2>/dev/null)
+    # Force CR-on-LF + cooked mode back on. sbx exec leaves the tty
+    # raw (no onlcr) regardless of what zsh had set before.
+    [ -t 1 ] && stty sane 2>/dev/null || true
+  fi
+
+  echo "--- host ralph processes ---"
+  echo "$host_ps"
+  echo
+  if [ -n "$SANDBOX_NAME" ]; then
+    echo "--- sandbox '$SANDBOX_NAME' processes ---"
+    echo "$sbx_out" | awk -v thr="$STUCK_CPU_SECS" '
+      NR==1 {print; next}
+      {
+        split($3, t, ":");
+        secs = (length(t)==3 ? t[1]*3600+t[2]*60+t[3] : t[1]*60+t[2]);
+        if ($4 ~ /dragonruby|rubocop|ruby|node/) {
+          mark = (secs >= thr) ? "  [STUCK?]" : "";
+          print $0 mark;
+        }
+      }'
+    echo
+    echo "(processes flagged [STUCK?] have used >${STUCK_CPU_SECS}s CPU)"
+  else
+    echo "(no SANDBOX_NAME — set in .ralph.conf to inspect sandbox)"
+  fi
+}
+
+cmd_kill() {
+  pkill -f 'ralph (once|run)|afk-ralph' && echo "ralph processes killed"
+  if [ -n "$SANDBOX_NAME" ]; then
+    sbx stop "$SANDBOX_NAME" 2>&1
+  fi
+}
+
+# --- subcommands ------------------------------------------------------
+iterate_once() {
+  if [ ! -s "$MARKER_FILE" ]; then
+    echo "ralph: no active PRD in $MARKER_FILE. Stopping."
+    return 10
+  fi
+  local active prd_dir
+  active=$(tr -d '[:space:]' < "$MARKER_FILE")
+  prd_dir=".scratch/$active"
+  if [ ! -d "$prd_dir" ]; then
+    echo "ralph: active PRD '$prd_dir' missing. Stopping." >&2
+    return 1
+  fi
+
+  local prompt
+  prompt=$(build_prompt "$prd_dir" "$prd_dir/issues")
+
+  local result
+  result=$($CLAUDE_CMD --dangerously-skip-permissions -p "$prompt" 2>&1)
+  local rc=$?
+  echo "$result"
+  if [ $rc -ne 0 ]; then
+    echo "ralph: claude invocation failed (rc=$rc)" >&2
+    return 1
+  fi
+
+  if [[ "$result" == *"<promise>COMPLETE</promise>"* ]]; then
+    echo "ralph: PRD '$prd_dir' complete."
+    return 20
+  fi
+  if [[ "$result" == *"<promise>BLOCKED</promise>"* ]]; then
+    echo "ralph: PRD '$prd_dir' blocked. Human needed." >&2
+    return 21
+  fi
+  return 0
+}
+
+# Allow sourcing for testing (e.g. `. ralph; pick_next_issue ...`).
+(return 0 2>/dev/null) && return 0
+
+[ $# -ge 1 ] || usage
+
+case "$1" in
+  status) cmd_status; exit 0 ;;
+  kill)   cmd_kill;   exit 0 ;;
+  once)
+    iterate_once
+    exit $?
+    ;;
+  run)
+    [ $# -ge 2 ] || usage
+    N="$2"
+    [[ "$N" =~ ^[0-9]+$ ]] || { echo "ralph: iterations must be a number"; exit 1; }
+    for ((i=1; i<=N; i++)); do
+      echo "=== ralph iteration $i/$N ==="
+      iterate_once
+      rc=$?
+      case $rc in
+        0)  ;;                            # continue
+        20) exit 0 ;;                     # COMPLETE
+        21) exit 2 ;;                     # BLOCKED
+        10) exit 0 ;;                     # no marker
+        *)  exit $rc ;;                   # other failure
+      esac
+    done
+    ;;
+  -h|--help) usage ;;
+  *) usage ;;
+esac
