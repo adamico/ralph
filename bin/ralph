@@ -29,8 +29,8 @@ LINT_CMD="/lint"
 BACKEND="${BACKEND:-fs}"
 # GitHub backend knobs (used only when BACKEND=github).
 GH_REPO="${GH_REPO:-}"                    # optional; defaults to gh-detected repo
-GH_LABEL_READY="${GH_LABEL_READY:-status:ready}"
-GH_LABEL_BLOCKED="${GH_LABEL_BLOCKED:-status:blocked}"
+GH_LABEL_READY="${GH_LABEL_READY:-ready-for-agent}"
+GH_LABEL_BLOCKED="${GH_LABEL_BLOCKED:-blocked}"
 
 pick_next_issue() {
   # ADR-0015: lowest filename with 'Status: ready' AND every Blocked-by
@@ -249,9 +249,17 @@ ls_milestones() {
   [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
   command -v gh >/dev/null 2>&1 || { echo "ralph: 'gh' CLI not found" >&2; return 1; }
   command -v jq >/dev/null 2>&1 || { echo "ralph: 'jq' not found" >&2; return 1; }
-  gh milestone list $repo_flag --state open --json title 2>/dev/null \
-    | jq -r '.[].title' \
-    | while read -r t; do printf '  %s\n' "$t"; done
+  local repo_path
+  if [ -n "$GH_REPO" ]; then
+    repo_path="$GH_REPO"
+  else
+    repo_path=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)
+  fi
+  gh api "repos/$repo_path/milestones?state=open&per_page=100" 2>/dev/null \
+    | jq -r '.[] | "\(.title)\t\(.open_issues)\t\(.closed_issues)"' \
+    | while IFS=$'\t' read -r title open closed; do
+        printf '  %-50s  %s open, %s closed\n' "$title" "$open" "$closed"
+      done
 }
 
 ls_issues_fs() {
@@ -293,8 +301,13 @@ ls_issues_gh() {
   local repo_flag=""
   [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
 
-  local next_pick
-  next_pick=$(pick_next_issue_gh "$milestone")
+  ALL_BLOCKED=0
+  local next_pick all_blocked_val
+  # pick_next_issue_gh runs in a subshell; capture ALL_BLOCKED via a temp file
+  local _ab_tmp
+  _ab_tmp=$(mktemp)
+  next_pick=$(pick_next_issue_gh "$milestone"; echo "$ALL_BLOCKED" > "$_ab_tmp")
+  all_blocked_val=$(cat "$_ab_tmp"); rm -f "$_ab_tmp"
 
   local open_json closed_json
   open_json=$(gh issue list $repo_flag --milestone "$milestone" --state open \
@@ -312,11 +325,14 @@ ls_issues_gh() {
         printf '  closed   #%-4s %s\n' "$num" "$title"
       done
 
+  # encode body as base64 to survive newlines in the tab-delimited stream
   printf '%s' "$open_json" | jq -r --arg L "$GH_LABEL_READY" --arg B "$GH_LABEL_BLOCKED" \
-    'sort_by(.number) | .[] | "\(.number)\t\(.title)\t\(.labels | map(.name) | join(","))\t\(.body)"' \
-    | while IFS=$'\t' read -r num title labels body; do
+    'sort_by(.number) | .[] | "\(.number)\t\(.title)\t\(.labels | map(.name) | join(","))\t\(.body | @base64)"' \
+    | while IFS=$'\t' read -r num title labels body_b64; do
         local marker="  " st bbextra=""
         [ "$num" = "$next_pick" ] && marker="→ "
+        local body
+        body=$(printf '%s' "$body_b64" | base64 -d 2>/dev/null)
         if printf '%s' "$labels" | grep -qF "$GH_LABEL_BLOCKED"; then
           st="blocked "
           local bb
@@ -331,7 +347,7 @@ ls_issues_gh() {
       done
 
   if [ -z "$next_pick" ]; then
-    [ "$ALL_BLOCKED" = 1 ] \
+    [ "$all_blocked_val" = 1 ] \
       && echo "(all blocked — human needed)" \
       || echo "(complete)"
   fi
