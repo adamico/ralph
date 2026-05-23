@@ -1,0 +1,110 @@
+# ralph
+
+Ralph Wiggum loop for AFK Claude Code runs. `ralph` repeatedly invokes
+Claude with a priority-ordered queue of issues until the queue drains,
+gets stuck, or you hit Ctrl-C.
+
+Two backends ship in one script:
+
+- **fs** (default) — issues are `.md` files under `.scratch/<active>/issues/`
+  with a `Status:` / `Blocked-by:` header.
+- **github** — issues live in a GitHub milestone; labels drive readiness.
+
+See `docs/ADR-0001-priority-rules.md` for the pick algorithm and
+commit/halt protocol.
+
+## Install
+
+```bash
+git clone https://github.com/adamico/ralph.git
+cd ralph
+./install.sh                  # → ~/.local/bin/ralph
+PREFIX=/usr/local ./install.sh  # → /usr/local/bin/ralph
+```
+
+Requires: bash, git. GitHub backend additionally needs `gh` and `jq`.
+
+## Quickstart — fs backend
+
+```bash
+# In your project root:
+cp <ralph-repo>/docs/examples/.ralph.conf .ralph.conf
+mkdir -p .scratch/my-prd/issues
+echo my-prd > .scratch/ACTIVE
+
+# Drop issue files: .scratch/my-prd/issues/01-foo.md, etc.
+# Header schema:
+#   Status: ready            (ready|done|blocked)
+#   Blocked-by: 02-bar, 03-baz
+#   ---
+#   <free-form spec>
+
+ralph run 10
+```
+
+## Quickstart — github backend
+
+```bash
+# .ralph.conf
+BACKEND=github
+GH_MILESTONE="v0.1"
+# GH_REPO="owner/name"      # optional; gh auto-detects from remote
+
+ralph run 10
+```
+
+Issues in the milestone are picked by ascending number. Ready means the
+`status:ready` label is set; blocked deps are parsed from
+`Blocked-by: #NN, #MM` in the issue body. A dep is "done" iff its issue
+is closed.
+
+## Subcommands
+
+| Command          | Behavior                                                       |
+|------------------|----------------------------------------------------------------|
+| `ralph once`     | One iteration. Exit 20 = COMPLETE, 21 = BLOCKED.               |
+| `ralph run <N>`  | Up to N iterations; halts on COMPLETE / BLOCKED / failure.     |
+| `ralph status`   | Show host + sandbox processes; flag stuck children.            |
+| `ralph kill`     | `pkill` ralph + `sbx stop` the sandbox.                        |
+
+## Config overrides
+
+Read from `./.ralph.conf` (sourced as bash) or environment. Env wins
+when both set.
+
+### Common
+
+| Key              | Default                          | Meaning                                       |
+|------------------|----------------------------------|-----------------------------------------------|
+| `CLAUDE_CMD`     | `claude`                         | How to invoke Claude Code.                    |
+| `SANDBOX_NAME`   | auto from `CLAUDE_CMD`           | Sandbox to inspect/stop.                      |
+| `TEST_CMD`       | `./run_tests`                    | Test command the agent runs each iteration.   |
+| `LINT_CMD`       | `/lint`                          | Lint command (use `:` for no-op).             |
+| `STUCK_CPU_SECS` | `180`                            | CPU-seconds threshold for `status` flagging.  |
+| `MARKER_FILE`    | `.scratch/ACTIVE`                | (fs) names the active PRD dir.                |
+| `BACKEND`        | `fs`                             | `fs` or `github`.                             |
+
+### GitHub backend
+
+| Key                 | Default          | Meaning                                  |
+|---------------------|------------------|------------------------------------------|
+| `GH_MILESTONE`      | (required)       | Milestone title scoping the queue.       |
+| `GH_REPO`           | gh-detected      | `owner/name`; passed as `--repo`.        |
+| `GH_LABEL_READY`    | `status:ready`   | Label marking pickable issues.           |
+| `GH_LABEL_BLOCKED`  | `status:blocked` | Label applied on iteration failure.      |
+
+## Halt codes
+
+`ralph once` (and per-iteration in `ralph run`) returns:
+
+- `0` — keep going
+- `20` — `<promise>COMPLETE</promise>` (queue drained)
+- `21` — `<promise>BLOCKED</promise>` (unfinished work, nothing pickable)
+- `10` — no active PRD marker (fs backend)
+- other — claude invocation failure
+
+## Tests
+
+```bash
+bash tests/pick_next_issue_spec.sh
+```

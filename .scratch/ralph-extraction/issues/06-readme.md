@@ -1,4 +1,4 @@
-Status: ready
+Status: done
 Blocked-by: 02-scaffold, 03-docs, 05-github-backend
 ---
 Write README.md covering both backends, install, quickstart, subcommands + overrides tables.
