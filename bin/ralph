@@ -157,7 +157,7 @@ iterate_once() {
   prompt=$(build_prompt "$prd_dir" "$prd_dir/issues")
 
   local result
-  result=$($CLAUDE_CMD --dangerously-skip-permissions -p "$prompt" 2>&1)
+  result=$($CLAUDE_CMD --effort low --model sonnet --dangerously-skip-permissions -p "$prompt" 2>&1)
   local rc=$?
   echo "$result"
   if [ $rc -ne 0 ]; then
