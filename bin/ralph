@@ -409,12 +409,18 @@ iterate_once() {
     return 1
   fi
 
+  local scope
+  if [ "$BACKEND" = "github" ]; then
+    scope="milestone '${milestone}'"
+  else
+    scope="PRD '${prd_dir:-?}'"
+  fi
   if [[ "$result" == *"<promise>COMPLETE</promise>"* ]]; then
-    echo "ralph: PRD '$prd_dir' complete."
+    echo "ralph: $scope complete."
     return 20
   fi
   if [[ "$result" == *"<promise>BLOCKED</promise>"* ]]; then
-    echo "ralph: PRD '$prd_dir' blocked. Human needed." >&2
+    echo "ralph: $scope blocked. Human needed." >&2
     return 21
   fi
   return 0
