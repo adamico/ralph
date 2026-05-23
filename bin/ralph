@@ -24,6 +24,14 @@ MARKER_FILE=".scratch/ACTIVE"
 TEST_CMD="./run_tests"
 LINT_CMD="/lint"
 
+# Backend: 'fs' (default, .scratch/<active>/issues/*.md) or 'github'.
+BACKEND="${BACKEND:-fs}"
+# GitHub backend knobs (used only when BACKEND=github).
+GH_MILESTONE="${GH_MILESTONE:-}"          # required for github backend
+GH_REPO="${GH_REPO:-}"                    # optional; defaults to gh-detected repo
+GH_LABEL_READY="${GH_LABEL_READY:-status:ready}"
+GH_LABEL_BLOCKED="${GH_LABEL_BLOCKED:-status:blocked}"
+
 pick_next_issue() {
   # ADR-0015: lowest filename with 'Status: ready' AND every Blocked-by
   # is 'Status: done'. Echoes path or empty. Sets ALL_BLOCKED=1 if
@@ -56,6 +64,82 @@ pick_next_issue() {
   done
   if [ -z "$pick" ] && [ "$any_unfinished" = 1 ]; then ALL_BLOCKED=1; fi
   echo "$pick"
+}
+
+gh_args() {
+  # Emit common gh flags (repo scope) for use via `$(gh_args)`.
+  [ -n "$GH_REPO" ] && printf -- '--repo %s ' "$GH_REPO"
+}
+
+pick_next_issue_gh() {
+  # GitHub backend variant. Echoes picked issue number, or empty.
+  # Sets ALL_BLOCKED=1 if open issues remain in the milestone but none
+  # pickable (every ready issue has an undone Blocked-by).
+  # Done == issue closed. Blocked-by entries in the issue body header
+  # reference issues as "#NN" (comma-separated).
+  ALL_BLOCKED=0
+  [ -n "$GH_MILESTONE" ] || { echo ""; return 0; }
+  local repo_flag=""
+  [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
+
+  # All open issues in milestone, sorted ascending by number.
+  local open_json
+  open_json=$(gh issue list $repo_flag --milestone "$GH_MILESTONE" --state open \
+              --json number,labels,body --limit 200 2>/dev/null) || { echo ""; return 0; }
+  local any_open
+  any_open=$(printf '%s' "$open_json" | jq 'length')
+  [ "${any_open:-0}" = 0 ] && { echo ""; return 0; }
+
+  # Iterate readies in ascending number order.
+  local readies
+  readies=$(printf '%s' "$open_json" | jq -r --arg L "$GH_LABEL_READY" '
+    map(select(.labels | map(.name) | index($L))) | sort_by(.number) | .[].number')
+
+  local pick=""
+  local num
+  for num in $readies; do
+    local body deps_line deps_ok=1
+    body=$(printf '%s' "$open_json" | jq -r --argjson n "$num" \
+            '.[] | select(.number==$n) | .body')
+    deps_line=$(printf '%s\n' "$body" | grep -m1 -i '^Blocked-by:' | \
+                sed 's/^[Bb]locked-by:[[:space:]]*//')
+    if [ -n "$deps_line" ]; then
+      local IFS=','
+      for d in $deps_line; do
+        d=$(printf '%s' "$d" | tr -d '[:space:]#')
+        [ -z "$d" ] && continue
+        local dstate
+        dstate=$(gh issue view "$d" $repo_flag --json state -q .state 2>/dev/null)
+        if [ "$dstate" != "CLOSED" ]; then deps_ok=0; break; fi
+      done
+    fi
+    if [ "$deps_ok" = 1 ]; then pick="$num"; break; fi
+  done
+  if [ -z "$pick" ]; then ALL_BLOCKED=1; fi
+  echo "$pick"
+}
+
+build_prompt_gh() {
+  local milestone="$1" issue_num="$2"
+  cat <<EOF
+GitHub backend. Milestone: $milestone. Picked issue: #$issue_num.
+
+Follow these priority rules (ADR-0015 style). Do not ask questions — act.
+
+1. Read issue #$issue_num via 'gh issue view $issue_num' for the spec.
+2. Implement it. Run tests via: $TEST_CMD
+   Run $LINT_CMD.
+3. On success: close the issue with 'gh issue close $issue_num --comment "ralph: done"',
+   append a one-paragraph entry to progress.txt, commit (code + progress).
+4. On failure (tests red, lint cannot pass, you give up): 'git stash -u',
+   then 'gh issue edit $issue_num --add-label "$GH_LABEL_BLOCKED" --remove-label "$GH_LABEL_READY"'
+   and 'gh issue comment $issue_num --body "Blocked-reason: <why>"'.
+   Do not commit the stashed work.
+5. If no ready issues remain in milestone '$milestone' but some are still open,
+   output <promise>BLOCKED</promise> and stop.
+6. If every issue in milestone '$milestone' is closed, output
+   <promise>COMPLETE</promise> and stop.
+EOF
 }
 
 build_prompt() {
@@ -141,20 +225,40 @@ cmd_kill() {
 
 # --- subcommands ------------------------------------------------------
 iterate_once() {
-  if [ ! -s "$MARKER_FILE" ]; then
-    echo "ralph: no active PRD in $MARKER_FILE. Stopping."
-    return 10
-  fi
-  local active prd_dir
-  active=$(tr -d '[:space:]' < "$MARKER_FILE")
-  prd_dir=".scratch/$active"
-  if [ ! -d "$prd_dir" ]; then
-    echo "ralph: active PRD '$prd_dir' missing. Stopping." >&2
-    return 1
-  fi
-
   local prompt
-  prompt=$(build_prompt "$prd_dir" "$prd_dir/issues")
+  if [ "$BACKEND" = "github" ]; then
+    if [ -z "$GH_MILESTONE" ]; then
+      echo "ralph: BACKEND=github requires GH_MILESTONE in .ralph.conf" >&2
+      return 1
+    fi
+    command -v gh >/dev/null 2>&1 || { echo "ralph: 'gh' CLI not found" >&2; return 1; }
+    command -v jq >/dev/null 2>&1 || { echo "ralph: 'jq' not found" >&2; return 1; }
+
+    local pick
+    pick=$(pick_next_issue_gh)
+    if [ -z "$pick" ]; then
+      if [ "$ALL_BLOCKED" = 1 ]; then
+        echo "<promise>BLOCKED</promise>"
+        return 21
+      fi
+      echo "<promise>COMPLETE</promise>"
+      return 20
+    fi
+    prompt=$(build_prompt_gh "$GH_MILESTONE" "$pick")
+  else
+    if [ ! -s "$MARKER_FILE" ]; then
+      echo "ralph: no active PRD in $MARKER_FILE. Stopping."
+      return 10
+    fi
+    local active prd_dir
+    active=$(tr -d '[:space:]' < "$MARKER_FILE")
+    prd_dir=".scratch/$active"
+    if [ ! -d "$prd_dir" ]; then
+      echo "ralph: active PRD '$prd_dir' missing. Stopping." >&2
+      return 1
+    fi
+    prompt=$(build_prompt "$prd_dir" "$prd_dir/issues")
+  fi
 
   local result
   result=$($CLAUDE_CMD --effort low --model sonnet --dangerously-skip-permissions -p "$prompt" 2>&1)

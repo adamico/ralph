@@ -1,4 +1,4 @@
-Status: ready
+Status: done
 Blocked-by: 02-scaffold
 ---
 Add GitHub Issues backend to bin/ralph (detection, milestone scoping, label pick, done/blocked/sentinels).
