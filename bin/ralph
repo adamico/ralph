@@ -6,7 +6,7 @@ set -uo pipefail
 usage() {
   cat <<EOF
 Usage:
-  ralph once [<milestone>]       # one iteration (milestone required for github backend)
+  ralph once [-i] [<milestone>]  # one iteration; -i runs claude interactively (milestone required for github backend)
   ralph run <N> [<milestone>]    # up to N iterations, halts on COMPLETE/BLOCKED
   ralph ls [<prd|milestone>]     # list PRDs/milestones or show issue queue
   ralph status                   # inspect running iterations + suspicious processes
@@ -364,6 +364,8 @@ cmd_ls() {
 
 # --- subcommands ------------------------------------------------------
 iterate_once() {
+  local interactive=0
+  if [ "${1:-}" = "-i" ]; then interactive=1; shift; fi
   local milestone="${1:-}"
   local prompt
   if [ "$BACKEND" = "github" ]; then
@@ -401,6 +403,16 @@ iterate_once() {
   fi
 
   local result rc
+  if [ "$interactive" = 1 ]; then
+    # Interactive TUI — no -p, no capture. Promise auto-detection disabled.
+    $CLAUDE_CMD --model sonnet --dangerously-skip-permissions "$prompt"
+    rc=$?
+    if [ $rc -ne 0 ]; then
+      echo "ralph: claude invocation failed (rc=$rc)" >&2
+      return 1
+    fi
+    return 0
+  fi
   local _out_tmp
   _out_tmp=$(mktemp)
   # Stream live to the terminal while also capturing for promise detection.
@@ -440,7 +452,8 @@ case "$1" in
   kill)   cmd_kill;   exit 0 ;;
   ls)     cmd_ls "${2:-}"; exit $? ;;
   once)
-    iterate_once "${2:-}"
+    shift
+    iterate_once "$@"
     exit $?
     ;;
   run)
