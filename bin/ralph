@@ -6,10 +6,11 @@ set -uo pipefail
 usage() {
   cat <<EOF
 Usage:
-  ralph once          # one iteration
-  ralph run <N>       # up to N iterations, halts on COMPLETE/BLOCKED
-  ralph status        # inspect running iterations + suspicious processes
-  ralph kill          # pkill ralph + stop sandbox
+  ralph once [<milestone>]       # one iteration (milestone required for github backend)
+  ralph run <N> [<milestone>]    # up to N iterations, halts on COMPLETE/BLOCKED
+  ralph ls [<prd|milestone>]     # list PRDs/milestones or show issue queue
+  ralph status                   # inspect running iterations + suspicious processes
+  ralph kill                     # pkill ralph + stop sandbox
 EOF
   exit 1
 }
@@ -27,7 +28,6 @@ LINT_CMD="/lint"
 # Backend: 'fs' (default, .scratch/<active>/issues/*.md) or 'github'.
 BACKEND="${BACKEND:-fs}"
 # GitHub backend knobs (used only when BACKEND=github).
-GH_MILESTONE="${GH_MILESTONE:-}"          # required for github backend
 GH_REPO="${GH_REPO:-}"                    # optional; defaults to gh-detected repo
 GH_LABEL_READY="${GH_LABEL_READY:-status:ready}"
 GH_LABEL_BLOCKED="${GH_LABEL_BLOCKED:-status:blocked}"
@@ -77,14 +77,14 @@ pick_next_issue_gh() {
   # pickable (every ready issue has an undone Blocked-by).
   # Done == issue closed. Blocked-by entries in the issue body header
   # reference issues as "#NN" (comma-separated).
+  local milestone="$1"
   ALL_BLOCKED=0
-  [ -n "$GH_MILESTONE" ] || { echo ""; return 0; }
   local repo_flag=""
   [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
 
   # All open issues in milestone, sorted ascending by number.
   local open_json
-  open_json=$(gh issue list $repo_flag --milestone "$GH_MILESTONE" --state open \
+  open_json=$(gh issue list $repo_flag --milestone "$milestone" --state open \
               --json number,labels,body --limit 200 2>/dev/null) || { echo ""; return 0; }
   local any_open
   any_open=$(printf '%s' "$open_json" | jq 'length')
@@ -223,19 +223,143 @@ cmd_kill() {
   fi
 }
 
+# --- ls subcommand ---------------------------------------------------
+ls_prds() {
+  local active=""
+  [ -s "$MARKER_FILE" ] && active=$(tr -d '[:space:]' < "$MARKER_FILE")
+  local found=0
+  for d in .scratch/*/; do
+    [ -d "$d" ] || continue
+    local name
+    name=$(basename "$d")
+    [ "$name" = "ACTIVE" ] && continue
+    found=1
+    if [ "$name" = "$active" ]; then
+      printf '* %s\n' "$name"
+    else
+      printf '  %s\n' "$name"
+    fi
+  done
+  [ "$found" = 0 ] && echo "(no PRDs in .scratch/)"
+  return 0
+}
+
+ls_milestones() {
+  local repo_flag=""
+  [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
+  command -v gh >/dev/null 2>&1 || { echo "ralph: 'gh' CLI not found" >&2; return 1; }
+  command -v jq >/dev/null 2>&1 || { echo "ralph: 'jq' not found" >&2; return 1; }
+  gh milestone list $repo_flag --state open --json title 2>/dev/null \
+    | jq -r '.[].title' \
+    | while read -r t; do printf '  %s\n' "$t"; done
+}
+
+ls_issues_fs() {
+  local prd="$1"
+  local prd_dir=".scratch/$prd"
+  if [ ! -d "$prd_dir/issues" ]; then
+    echo "ralph: PRD '$prd' not found in .scratch/" >&2; return 1
+  fi
+  local next_pick
+  next_pick=$(pick_next_issue "$prd_dir")
+  printf 'PRD: %s\n' "$prd"
+  local any_unfinished=0
+  for f in "$prd_dir/issues"/*.md; do
+    [ -e "$f" ] || continue
+    local name status bbline marker="  "
+    name=$(basename "$f")
+    status=$(grep -m1 '^Status:' "$f" | awk '{print $2}')
+    bbline=$(grep -m1 '^Blocked-by:' "$f" | sed 's/^Blocked-by:[[:space:]]*//')
+    local title
+    title=$(grep -v '^Status:\|^Blocked-by:\|^---' "$f" | grep -m1 '.' | sed 's/^#* *//')
+    [ "$status" != "done" ] && any_unfinished=1
+    [ "$f" = "$next_pick" ] && marker="→ "
+    local extra=""
+    [ -n "$bbline" ] && extra=" [Blocked-by: $bbline]"
+    printf '%s%-8s %s  %s%s\n' "$marker" "${status:-?}" "$name" "$title" "$extra"
+  done
+  if [ -z "$next_pick" ]; then
+    [ "$any_unfinished" = 1 ] \
+      && echo "(all blocked — human needed)" \
+      || echo "(complete)"
+  fi
+  return 0
+}
+
+ls_issues_gh() {
+  local milestone="$1"
+  command -v gh >/dev/null 2>&1 || { echo "ralph: 'gh' CLI not found" >&2; return 1; }
+  command -v jq >/dev/null 2>&1 || { echo "ralph: 'jq' not found" >&2; return 1; }
+  local repo_flag=""
+  [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
+
+  local next_pick
+  next_pick=$(pick_next_issue_gh "$milestone")
+
+  local open_json closed_json
+  open_json=$(gh issue list $repo_flag --milestone "$milestone" --state open \
+              --json number,title,labels,body --limit 200 2>/dev/null) || open_json="[]"
+  closed_json=$(gh issue list $repo_flag --milestone "$milestone" --state closed \
+                --json number,title --limit 200 2>/dev/null) || closed_json="[]"
+
+  local n_open n_closed
+  n_open=$(printf '%s' "$open_json" | jq 'length')
+  n_closed=$(printf '%s' "$closed_json" | jq 'length')
+  printf 'Milestone: %s  (%s open, %s closed)\n' "$milestone" "$n_open" "$n_closed"
+
+  printf '%s' "$closed_json" | jq -r 'sort_by(.number) | .[] | "\(.number)\t\(.title)"' \
+    | while IFS=$'\t' read -r num title; do
+        printf '  closed   #%-4s %s\n' "$num" "$title"
+      done
+
+  printf '%s' "$open_json" | jq -r --arg L "$GH_LABEL_READY" --arg B "$GH_LABEL_BLOCKED" \
+    'sort_by(.number) | .[] | "\(.number)\t\(.title)\t\(.labels | map(.name) | join(","))\t\(.body)"' \
+    | while IFS=$'\t' read -r num title labels body; do
+        local marker="  " st bbextra=""
+        [ "$num" = "$next_pick" ] && marker="→ "
+        if printf '%s' "$labels" | grep -qF "$GH_LABEL_BLOCKED"; then
+          st="blocked "
+          local bb
+          bb=$(printf '%s\n' "$body" | grep -m1 -i '^Blocked-by:' | sed 's/^[Bb]locked-by:[[:space:]]*//')
+          [ -n "$bb" ] && bbextra=" [Blocked-by: $bb]"
+        elif printf '%s' "$labels" | grep -qF "$GH_LABEL_READY"; then
+          st="ready   "
+        else
+          st="open    "
+        fi
+        printf '%s%s #%-4s %s%s\n' "$marker" "$st" "$num" "$title" "$bbextra"
+      done
+
+  if [ -z "$next_pick" ]; then
+    [ "$ALL_BLOCKED" = 1 ] \
+      && echo "(all blocked — human needed)" \
+      || echo "(complete)"
+  fi
+}
+
+cmd_ls() {
+  local arg="${1:-}"
+  if [ "$BACKEND" = "github" ]; then
+    [ -n "$arg" ] && ls_issues_gh "$arg" || ls_milestones
+  else
+    [ -n "$arg" ] && ls_issues_fs "$arg" || ls_prds
+  fi
+}
+
 # --- subcommands ------------------------------------------------------
 iterate_once() {
+  local milestone="${1:-}"
   local prompt
   if [ "$BACKEND" = "github" ]; then
-    if [ -z "$GH_MILESTONE" ]; then
-      echo "ralph: BACKEND=github requires GH_MILESTONE in .ralph.conf" >&2
+    if [ -z "$milestone" ]; then
+      echo "ralph: BACKEND=github requires a milestone argument: ralph once <milestone>" >&2
       return 1
     fi
     command -v gh >/dev/null 2>&1 || { echo "ralph: 'gh' CLI not found" >&2; return 1; }
     command -v jq >/dev/null 2>&1 || { echo "ralph: 'jq' not found" >&2; return 1; }
 
     local pick
-    pick=$(pick_next_issue_gh)
+    pick=$(pick_next_issue_gh "$milestone")
     if [ -z "$pick" ]; then
       if [ "$ALL_BLOCKED" = 1 ]; then
         echo "<promise>BLOCKED</promise>"
@@ -244,7 +368,7 @@ iterate_once() {
       echo "<promise>COMPLETE</promise>"
       return 20
     fi
-    prompt=$(build_prompt_gh "$GH_MILESTONE" "$pick")
+    prompt=$(build_prompt_gh "$milestone" "$pick")
   else
     if [ ! -s "$MARKER_FILE" ]; then
       echo "ralph: no active PRD in $MARKER_FILE. Stopping."
@@ -288,8 +412,9 @@ iterate_once() {
 case "$1" in
   status) cmd_status; exit 0 ;;
   kill)   cmd_kill;   exit 0 ;;
+  ls)     cmd_ls "${2:-}"; exit $? ;;
   once)
-    iterate_once
+    iterate_once "${2:-}"
     exit $?
     ;;
   run)
@@ -298,7 +423,7 @@ case "$1" in
     [[ "$N" =~ ^[0-9]+$ ]] || { echo "ralph: iterations must be a number"; exit 1; }
     for ((i=1; i<=N; i++)); do
       echo "=== ralph iteration $i/$N ==="
-      iterate_once
+      iterate_once "${3:-}"
       rc=$?
       case $rc in
         0)  ;;                            # continue

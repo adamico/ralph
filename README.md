@@ -47,11 +47,14 @@ ralph run 10
 ```bash
 # .ralph.conf
 BACKEND=github
-GH_MILESTONE="v0.1"
 # GH_REPO="owner/name"      # optional; gh auto-detects from remote
 
-ralph run 10
+ralph run 10 v0.1
 ```
+
+The milestone argument (`v0.1` above) is the active work queue — the
+GitHub equivalent of a `.scratch/<prd>/` directory in the fs backend.
+Pass it each invocation to tell ralph which milestone to drain.
 
 Issues in the milestone are picked by ascending number. Ready means the
 `status:ready` label is set; blocked deps are parsed from
@@ -60,12 +63,16 @@ is closed.
 
 ## Subcommands
 
-| Command          | Behavior                                                       |
-|------------------|----------------------------------------------------------------|
-| `ralph once`     | One iteration. Exit 20 = COMPLETE, 21 = BLOCKED.               |
-| `ralph run <N>`  | Up to N iterations; halts on COMPLETE / BLOCKED / failure.     |
-| `ralph status`   | Show host + sandbox processes; flag stuck children.            |
-| `ralph kill`     | `pkill` ralph + `sbx stop` the sandbox.                        |
+| Command                       | Behavior                                                       |
+|-------------------------------|----------------------------------------------------------------|
+| `ralph once [<milestone>]`    | One iteration. Exit 20 = COMPLETE, 21 = BLOCKED.               |
+| `ralph run <N> [<milestone>]` | Up to N iterations; halts on COMPLETE / BLOCKED / failure.     |
+| `ralph ls`                    | List PRDs (fs) or open milestones (github).                    |
+| `ralph ls <prd\|milestone>`   | Show issue queue with status and next pick (`→`).              |
+| `ralph status`                | Show host + sandbox processes; flag stuck children.            |
+| `ralph kill`                  | `pkill` ralph + `sbx stop` the sandbox.                        |
+
+`<milestone>` is required when `BACKEND=github`; ignored for `fs` backend.
 
 ## Config overrides
 
@@ -88,7 +95,6 @@ when both set.
 
 | Key                 | Default          | Meaning                                  |
 |---------------------|------------------|------------------------------------------|
-| `GH_MILESTONE`      | (required)       | Milestone title scoping the queue.       |
 | `GH_REPO`           | gh-detected      | `owner/name`; passed as `--repo`.        |
 | `GH_LABEL_READY`    | `status:ready`   | Label marking pickable issues.           |
 | `GH_LABEL_BLOCKED`  | `status:blocked` | Label applied on iteration failure.      |
