@@ -121,6 +121,28 @@ infer_milestone_gh() {
   fi
 }
 
+close_milestone_gh() {
+  # Close the GitHub milestone after the queue drains. Failure is non-fatal.
+  local milestone="$1"
+  local repo_flag=""
+  [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
+
+  local milestone_num
+  milestone_num=$(gh api $repo_flag "repos/:owner/:repo/milestones" \
+    --jq ".[] | select(.title == \"$milestone\") | .number" 2>/dev/null)
+  if [ -z "$milestone_num" ]; then
+    echo "ralph: warning: could not resolve milestone number for '$milestone'; skipping auto-close" >&2
+    return 0
+  fi
+  if gh api $repo_flag "repos/:owner/:repo/milestones/$milestone_num" \
+       -X PATCH -f state=closed >/dev/null 2>&1; then
+    echo "ralph: milestone '$milestone' closed."
+  else
+    echo "ralph: warning: failed to close milestone '$milestone' (permissions?)" >&2
+  fi
+  return 0
+}
+
 pick_next_issue_gh() {
   # GitHub backend variant. Echoes picked issue number, or empty.
   # Sets ALL_BLOCKED=1 if open issues remain in the milestone but none
@@ -438,6 +460,7 @@ iterate_once() {
         echo "<promise>BLOCKED</promise>"
         return 21
       fi
+      close_milestone_gh "$milestone"
       echo "<promise>COMPLETE</promise>"
       return 20
     fi
@@ -487,6 +510,7 @@ iterate_once() {
     scope="PRD '${prd_dir:-?}'"
   fi
   if [[ "$result" == *"<promise>COMPLETE</promise>"* ]]; then
+    [ "$BACKEND" = "github" ] && close_milestone_gh "$milestone"
     echo "ralph: $scope complete."
     return 20
   fi

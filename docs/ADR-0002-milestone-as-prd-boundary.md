@@ -17,7 +17,8 @@ the same role `.scratch/<prd>/` plays in the fs backend.
 ## Rationale
 
 - Milestones have a native lifecycle: open while in progress, close when the queue
-  drains. No bookkeeping labels needed.
+  drains. Ralph auto-closes the milestone via `PATCH /milestones/{number}` when it
+  reaches the COMPLETE state. No bookkeeping labels needed.
 - `gh issue list --milestone` is a first-class filter — no post-hoc jq gymnastics.
 - A milestone is visually coherent in the GitHub UI: one page shows all issues in
   the queue, their state, and progress.
