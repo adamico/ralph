@@ -127,7 +127,7 @@ GitHub backend. Milestone: $milestone. Picked issue: #$issue_num.
 
 Follow these priority rules (ADR-0015 style). Do not ask questions — act.
 
-1. Read issue #$issue_num via 'gh issue view $issue_num' for the spec.
+1. Read issue #$issue_num via 'gh issue view $issue_num --json number,title,body,state,labels,milestone,comments' for the spec.
 2. Implement it. Run tests via: $TEST_CMD
    Run $LINT_CMD.
 3. On success: close the issue with 'gh issue close $issue_num --comment "ralph: done"',
