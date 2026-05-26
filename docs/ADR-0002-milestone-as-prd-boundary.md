@@ -26,7 +26,10 @@ the same role `.scratch/<prd>/` plays in the fs backend.
 
 ## Consequences
 
-- Milestone title must be passed each invocation; it cannot be omitted.
+- Milestone can be inferred when exactly one open milestone exists; when multiple
+  open milestones exist and stdin is a TTY, an interactive picker is shown; when
+  multiple exist and stdin is non-TTY (cron, backgrounded), the invocation errors
+  with candidates. Explicit milestone argument overrides inference.
 - `GH_MILESTONE` is not a config key — remove it from `.ralph.conf` examples.
 - One active milestone at a time per invocation; parallel milestones require
   parallel ralph processes.

@@ -72,6 +72,55 @@ gh_args() {
   [ -n "$GH_REPO" ] && printf -- '--repo %s ' "$GH_REPO"
 }
 
+infer_milestone_gh() {
+  # Infer a single open milestone, or error/prompt if ambiguous.
+  # Returns milestone title on success, or empty + exit code on error.
+  # Exit codes: 0 = success, 1 = error (0 or >1 milestones, non-TTY), 2 = user cancelled picker
+  local repo_flag=""
+  [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
+
+  local milestones_json
+  milestones_json=$(gh api $repo_flag repos/:owner/:repo/milestones?state=open 2>/dev/null | jq -r '.[] | .title') || {
+    echo "ralph: failed to fetch milestones" >&2
+    return 1
+  }
+
+  local count
+  count=$(printf '%s\n' "$milestones_json" | grep -c . || true)
+
+  if [ "$count" -eq 0 ]; then
+    echo "ralph: no open milestones; create one or run gh issue create --milestone <name>" >&2
+    return 1
+  elif [ "$count" -eq 1 ]; then
+    printf '%s' "$milestones_json"
+    return 0
+  else
+    # Multiple milestones — check if stdin is a TTY
+    if [ -t 0 ]; then
+      # Interactive picker
+      local i=1
+      printf '\nMultiple open milestones:\n'
+      printf '%s\n' "$milestones_json" | while read -r m; do
+        printf '%d) %s\n' "$i" "$m"
+        i=$((i+1))
+      done
+      printf '\nSelect milestone (1-%d): ' "$count"
+      read -r choice
+      if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$count" ]; then
+        echo "ralph: invalid choice" >&2
+        return 2
+      fi
+      printf '%s\n' "$milestones_json" | sed -n "${choice}p"
+      return 0
+    else
+      # Non-TTY — error with candidates
+      echo "ralph: multiple open milestones (specify one):" >&2
+      printf '%s\n' "$milestones_json" | sed 's/^/  /'  >&2
+      return 1
+    fi
+  fi
+}
+
 pick_next_issue_gh() {
   # GitHub backend variant. Echoes picked issue number, or empty.
   # Sets ALL_BLOCKED=1 if open issues remain in the milestone but none
@@ -370,12 +419,17 @@ iterate_once() {
   local milestone="${1:-}"
   local prompt
   if [ "$BACKEND" = "github" ]; then
-    if [ -z "$milestone" ]; then
-      echo "ralph: BACKEND=github requires a milestone argument: ralph once <milestone>" >&2
-      return 1
-    fi
     command -v gh >/dev/null 2>&1 || { echo "ralph: 'gh' CLI not found" >&2; return 1; }
     command -v jq >/dev/null 2>&1 || { echo "ralph: 'jq' not found" >&2; return 1; }
+
+    # Infer milestone if not provided
+    if [ -z "$milestone" ]; then
+      milestone=$(infer_milestone_gh)
+      rc=$?
+      if [ $rc -ne 0 ]; then
+        return "$rc"
+      fi
+    fi
 
     local pick
     pick=$(pick_next_issue_gh "$milestone")
