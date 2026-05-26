@@ -24,6 +24,7 @@ CLAUDE_CMD="claude"
 MARKER_FILE=".scratch/ACTIVE"
 TEST_CMD="./run_tests"
 LINT_CMD="/lint"
+MODEL="${MODEL:-sonnet}"
 
 # Backend: 'fs' (default, .scratch/<active>/issues/*.md) or 'github'.
 BACKEND="${BACKEND:-fs}"
@@ -416,7 +417,7 @@ iterate_once() {
   local _out_tmp
   _out_tmp=$(mktemp)
   # Stream live to the terminal while also capturing for promise detection.
-  $CLAUDE_CMD --effort low --model sonnet --dangerously-skip-permissions -p "$prompt" 2>&1 \
+  $CLAUDE_CMD --effort low --model "$MODEL" --dangerously-skip-permissions -p "$prompt" 2>&1 \
     | tee "$_out_tmp"
   rc=${PIPESTATUS[0]}
   result=$(cat "$_out_tmp"); rm -f "$_out_tmp"
