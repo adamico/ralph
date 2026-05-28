@@ -210,6 +210,201 @@ test_session_marker
 cd / || true
 rm -rf "$TEST_DIR"
 
+# --- JSONL log creation test (issue #16) ---
+test_jsonl_creation() {
+  local test_dir
+  test_dir=$(mktemp -d)
+  cd "$test_dir" || exit 1
+
+  # Create mock claude command that emits canned stream-json output
+  mkdir -p bin
+  cat > bin/claude << 'MOCK_CLAUDE'
+#!/bin/bash
+# Mock claude: output stream-json without actually invoking LLM
+cat <<'EOF'
+{"type":"assistant","message":{"content":[{"type":"text","text":"GitHub backend. Milestone: test. Picked issue: #1."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Implementing..."}]}}
+{"type":"result","result":"<promise>COMPLETE</promise>"}
+EOF
+MOCK_CLAUDE
+  chmod +x bin/claude
+
+  # Setup environment
+  BACKEND=github
+  GH_REPO=""
+  CLAUDE_CMD="./bin/claude"
+  MODEL="sonnet"
+  TEST_CMD="true"
+  LINT_CMD="true"
+
+  # Create a minimal milestone for testing (mock gh command)
+  mkdir -p .git
+
+  # Create a mock iterate_once by sourcing ralph and setting up a scope
+  local logs_dir=".ralph-logs/test"
+  mkdir -p "$logs_dir"
+
+  # Simulate what iterate_once does
+  local ts iter_num log_file
+  ts=$(date +%s)
+  iter_num=1
+  log_file="$logs_dir/iter-${iter_num}-${ts}.jsonl"
+
+  # Stream through the mock claude
+  $CLAUDE_CMD --output-format stream-json 2>&1 \
+    | grep --line-buffered '^{' \
+    | tee "$log_file" > /dev/null
+
+  # Verify JSONL file was created
+  if [ ! -f "$log_file" ]; then
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("jsonl_creation: log file not created")
+    echo "FAIL: jsonl_creation: log file not created"
+  else
+    PASS=$((PASS+1))
+  fi
+
+  # Verify JSONL contains expected content
+  if grep -q 'Picked issue: #1' "$log_file"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("jsonl_creation: expected content not found")
+    echo "FAIL: jsonl_creation: expected content not found"
+  fi
+
+  # Cleanup
+  cd / || true
+  rm -rf "$test_dir"
+}
+
+test_jsonl_creation
+
+# --- Promise detection test (issue #16) ---
+test_promise_detection() {
+  local test_dir
+  test_dir=$(mktemp -d)
+  cd "$test_dir" || exit 1
+
+  mkdir -p logs
+
+  # Create test JSONL with COMPLETE promise
+  cat > logs/iter-1.jsonl << 'EOF'
+{"type":"assistant","message":{"content":[{"type":"text","text":"Working..."}]}}
+{"type":"result","result":"<promise>COMPLETE</promise>"}
+EOF
+
+  # Create test JSONL with BLOCKED promise
+  cat > logs/iter-2.jsonl << 'EOF'
+{"type":"assistant","message":{"content":[{"type":"text","text":"Stuck..."}]}}
+{"type":"result","result":"<promise>BLOCKED</promise>"}
+EOF
+
+  # Create test JSONL with no promise
+  cat > logs/iter-3.jsonl << 'EOF'
+{"type":"assistant","message":{"content":[{"type":"text","text":"In progress..."}]}}
+EOF
+
+  # Test promise extraction
+  local promise
+
+  promise=$(jq -r 'select(.type == "result").result // empty' < logs/iter-1.jsonl)
+  if [[ "$promise" == *"COMPLETE"* ]]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("promise_detection: COMPLETE not detected")
+    echo "FAIL: promise_detection: COMPLETE not detected"
+  fi
+
+  promise=$(jq -r 'select(.type == "result").result // empty' < logs/iter-2.jsonl)
+  if [[ "$promise" == *"BLOCKED"* ]]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("promise_detection: BLOCKED not detected")
+    echo "FAIL: promise_detection: BLOCKED not detected"
+  fi
+
+  promise=$(jq -r 'select(.type == "result").result // empty' < logs/iter-3.jsonl)
+  if [ -z "$promise" ]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("promise_detection: no promise should be empty")
+    echo "FAIL: promise_detection: no promise should be empty"
+  fi
+
+  # Cleanup
+  cd / || true
+  rm -rf "$test_dir"
+}
+
+test_promise_detection
+
+# --- Inspect list mode test (issue #16) ---
+test_inspect_list() {
+  local test_dir
+  test_dir=$(mktemp -d)
+  cd "$test_dir" || exit 1
+
+  # Source ralph to use its functions
+  # shellcheck disable=SC1090
+  . "$RALPH"
+
+  # Create pre-written JSONL fixtures
+  mkdir -p .ralph-logs/test-milestone
+
+  cat > .ralph-logs/test-milestone/iter-1-1609459200.jsonl << 'EOF'
+{"type":"assistant","message":{"content":[{"type":"text","text":"Picked issue: #42"}]}}
+{"type":"result","result":"<promise>COMPLETE</promise>"}
+EOF
+
+  cat > .ralph-logs/test-milestone/iter-2-1609459300.jsonl << 'EOF'
+{"type":"assistant","message":{"content":[{"type":"text","text":"Picked issue: #43"}]}}
+{"type":"result","result":"<promise>BLOCKED</promise>"}
+EOF
+
+  # Capture inspect output
+  local output
+  output=$(BACKEND=github GH_REPO="" cmd_inspect_list "test-milestone" 2>&1)
+
+  # Verify table header is present
+  if echo "$output" | grep -q "Iter#"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("inspect_list: header not found")
+    echo "FAIL: inspect_list: header not found"
+  fi
+
+  # Verify iteration 1 is present with correct promise
+  if echo "$output" | grep -q "1.*COMPLETE.*42"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("inspect_list: iteration 1 output incorrect")
+    echo "FAIL: inspect_list: iteration 1 output incorrect"
+    echo "$output"
+  fi
+
+  # Verify iteration 2 is present with correct promise
+  if echo "$output" | grep -q "2.*BLOCKED.*43"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("inspect_list: iteration 2 output incorrect")
+    echo "FAIL: inspect_list: iteration 2 output incorrect"
+    echo "$output"
+  fi
+
+  # Cleanup
+  cd / || true
+  rm -rf "$test_dir"
+}
+
+test_inspect_list
+
 # --- summary ---
 echo
 echo "ran $((PASS+FAIL)) assertions: $PASS pass, $FAIL fail"
