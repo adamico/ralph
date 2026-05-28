@@ -491,31 +491,49 @@ iterate_once() {
     fi
     return 0
   fi
-  local _out_tmp
-  _out_tmp=$(mktemp)
-  # Stream live to the terminal while also capturing for promise detection.
-  $CLAUDE_CMD --effort low --model "$MODEL" --dangerously-skip-permissions -p "$prompt" 2>&1 \
-    | tee "$_out_tmp"
+
+  # Non-interactive: use stream-json format, write JSONL logs, detect promise from file
+  command -v jq >/dev/null 2>&1 || { echo "ralph: 'jq' not found" >&2; return 1; }
+
+  local scope
+  if [ "$BACKEND" = "github" ]; then
+    scope="$milestone"
+  else
+    scope="${prd_dir:-?}"
+  fi
+
+  local logs_dir=".ralph-logs/$scope"
+  mkdir -p "$logs_dir" || { echo "ralph: failed to create logs directory" >&2; return 1; }
+
+  local ts iter_num log_file
+  ts=$(date +%s)
+  iter_num=$(ls "$logs_dir"/iter-* 2>/dev/null | wc -l | awk '{print $1+1}')
+  log_file="$logs_dir/iter-${iter_num}-${ts}.jsonl"
+
+  # Stream live text output to terminal while writing raw JSONL to file
+  $CLAUDE_CMD --output-format stream-json --effort low --model "$MODEL" --dangerously-skip-permissions -p "$prompt" 2>&1 \
+    | grep --line-buffered '^{' \
+    | tee "$log_file" \
+    | jq -r 'select(.type == "assistant").message.content[]? | select(.type == "text").text // empty | gsub("\n"; "\r\n") | . + "\r\n\n"'
   rc=${PIPESTATUS[0]}
-  result=$(cat "$_out_tmp"); rm -f "$_out_tmp"
   if [ $rc -ne 0 ]; then
     echo "ralph: claude invocation failed (rc=$rc)" >&2
     return 1
   fi
 
-  local scope
-  if [ "$BACKEND" = "github" ]; then
-    scope="milestone '${milestone}'"
-  else
-    scope="PRD '${prd_dir:-?}'"
+  # Detect promise from the JSONL file
+  result=$(jq -r 'select(.type == "result").result // empty' < "$log_file")
+  if [ -z "$result" ]; then
+    return 0
   fi
+
   if [[ "$result" == *"<promise>COMPLETE</promise>"* ]]; then
     [ "$BACKEND" = "github" ] && close_milestone_gh "$milestone"
-    echo "ralph: $scope complete."
+    echo "ralph: scope '$scope' complete."
     return 20
   fi
   if [[ "$result" == *"<promise>BLOCKED</promise>"* ]]; then
-    echo "ralph: $scope blocked. Human needed." >&2
+    echo "ralph: scope '$scope' blocked. Human needed." >&2
     return 21
   fi
   return 0
