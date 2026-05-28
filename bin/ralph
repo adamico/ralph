@@ -401,8 +401,93 @@ cmd_inspect_replay() {
   return 0
 }
 
+cmd_inspect_tail() {
+  # Live-tail mode: stream current iteration until session ends
+  local scope="$1"
+  local logs_dir=".ralph-logs/$scope"
+  local running_file="$logs_dir/running"
+
+  if [ ! -d "$logs_dir" ]; then
+    echo "ralph: no logs found for scope '$scope'"
+    return 1
+  fi
+
+  if [ ! -f "$running_file" ]; then
+    echo "ralph: no running session in scope '$scope'"
+    return 1
+  fi
+
+  echo "ralph: tailing live session in '$scope'..."
+  echo
+
+  # Track state for each iteration
+  declare -A iter_header_printed  # Track which iterations have printed header
+  declare -A iter_jsonl_lines     # Track per-iteration JSONL line counts
+  declare -A iter_promise_printed # Track which iterations have printed promise
+
+  while [ -f "$running_file" ]; do
+    # Tail all iter-* files
+    local -a iters
+    mapfile -t iters < <(ls -1 "$logs_dir"/iter-* 2>/dev/null | sort -V)
+
+    for current_iter in "${iters[@]}"; do
+      [ -e "$current_iter" ] || continue
+
+      # Extract iteration number
+      local iter_num
+      iter_num=$(basename "$current_iter" | sed 's/iter-\([0-9]*\)-.*/\1/')
+
+      # Initialize tracking for this iteration if needed
+      if [ -z "${iter_header_printed[$iter_num]:-}" ]; then
+        iter_header_printed[$iter_num]=0
+        iter_jsonl_lines[$iter_num]=0
+        iter_promise_printed[$iter_num]=0
+      fi
+
+      # Print iteration boundary marker on first entry for this iteration
+      if [ "${iter_header_printed[$iter_num]}" = "0" ]; then
+        local issue
+        issue=$(extract_issue_from_jsonl "$current_iter")
+        echo "=== Iteration $iter_num (Issue #${issue:-?}) ==="
+        iter_header_printed[$iter_num]=1
+      fi
+
+      # Count current JSONL lines in this iteration
+      local current_jsonl_lines
+      current_jsonl_lines=$(grep -c . < "$current_iter" 2>/dev/null || echo 0)
+      local last_lines=${iter_jsonl_lines[$iter_num]}
+
+      # If new lines were added, process them
+      if [ "$current_jsonl_lines" -gt "$last_lines" ]; then
+        # Extract and print new lines
+        sed -n "$((last_lines + 1)),\$p" < "$current_iter" \
+          | jq -r 'select(.type == "assistant").message.content[]? | select(.type == "text").text // empty' 2>/dev/null || true
+
+        iter_jsonl_lines[$iter_num]="$current_jsonl_lines"
+      fi
+
+      # Check if iteration has completed (has result line) and we haven't printed promise yet
+      if [ "${iter_promise_printed[$iter_num]}" = "0" ]; then
+        local promise
+        promise=$(extract_promise_from_jsonl "$current_iter")
+        if [ -n "$promise" ]; then
+          echo "Promise: $promise"
+          echo
+          iter_promise_printed[$iter_num]=1
+        fi
+      fi
+    done
+
+    # Brief sleep to avoid busy-waiting
+    sleep 0.1
+  done
+
+  echo "ralph: session ended."
+  return 0
+}
+
 cmd_inspect() {
-  # Inspect logged iterations: list mode or replay mode
+  # Inspect logged iterations: list mode, tail mode, or replay mode
   local milestone="${1:-}" iter_num="${2:-}"
 
   local scope
@@ -431,8 +516,15 @@ cmd_inspect() {
 
   # Dispatch based on mode
   if [ -z "$iter_num" ]; then
-    # List mode
-    cmd_inspect_list "$scope"
+    # List/tail mode: check for running session
+    local running_file=".ralph-logs/$scope/running"
+    if [ -f "$running_file" ]; then
+      # Live session detected: enter tail mode
+      cmd_inspect_tail "$scope"
+    else
+      # No running session: enter list mode
+      cmd_inspect_list "$scope"
+    fi
   else
     # Replay mode
     if ! [[ "$iter_num" =~ ^[0-9]+$ ]]; then
