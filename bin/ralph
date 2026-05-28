@@ -420,60 +420,54 @@ cmd_inspect_tail() {
   echo "ralph: tailing live session in '$scope'..."
   echo
 
-  # Track state for each iteration
-  declare -A iter_header_printed  # Track which iterations have printed header
-  declare -A iter_jsonl_lines     # Track per-iteration JSONL line counts
-  declare -A iter_promise_printed # Track which iterations have printed promise
+  # Use temp dir for state tracking (bash 3 compat: no associative arrays)
+  local state_dir
+  state_dir=$(mktemp -d)
+  trap 'rm -rf "$state_dir"' RETURN
 
   while [ -f "$running_file" ]; do
-    # Tail all iter-* files
-    local -a iters
-    mapfile -t iters < <(ls -1 "$logs_dir"/iter-* 2>/dev/null | sort -V)
-
-    for current_iter in "${iters[@]}"; do
+    # bash 3 compat: glob instead of mapfile
+    local current_iter
+    for current_iter in "$logs_dir"/iter-* ; do
       [ -e "$current_iter" ] || continue
 
       # Extract iteration number
       local iter_num
       iter_num=$(basename "$current_iter" | sed 's/iter-\([0-9]*\)-.*/\1/')
 
-      # Initialize tracking for this iteration if needed
-      if [ -z "${iter_header_printed[$iter_num]:-}" ]; then
-        iter_header_printed[$iter_num]=0
-        iter_jsonl_lines[$iter_num]=0
-        iter_promise_printed[$iter_num]=0
-      fi
+      local hdr_file="$state_dir/hdr_$iter_num"
+      local lines_file="$state_dir/lines_$iter_num"
+      local promise_file="$state_dir/promise_$iter_num"
 
       # Print iteration boundary marker on first entry for this iteration
-      if [ "${iter_header_printed[$iter_num]}" = "0" ]; then
+      if [ ! -f "$hdr_file" ]; then
         local issue
         issue=$(extract_issue_from_jsonl "$current_iter")
         echo "=== Iteration $iter_num (Issue #${issue:-?}) ==="
-        iter_header_printed[$iter_num]=1
+        touch "$hdr_file"
       fi
 
       # Count current JSONL lines in this iteration
       local current_jsonl_lines
       current_jsonl_lines=$(grep -c . < "$current_iter" 2>/dev/null || echo 0)
-      local last_lines=${iter_jsonl_lines[$iter_num]}
+      local last_lines=0
+      [ -f "$lines_file" ] && last_lines=$(cat "$lines_file")
 
       # If new lines were added, process them
       if [ "$current_jsonl_lines" -gt "$last_lines" ]; then
-        # Extract and print new lines
         sed -n "$((last_lines + 1)),\$p" < "$current_iter" \
           | jq -r 'select(.type == "assistant").message.content[]? | select(.type == "text").text // empty' 2>/dev/null || true
-
-        iter_jsonl_lines[$iter_num]="$current_jsonl_lines"
+        echo "$current_jsonl_lines" > "$lines_file"
       fi
 
-      # Check if iteration has completed (has result line) and we haven't printed promise yet
-      if [ "${iter_promise_printed[$iter_num]}" = "0" ]; then
+      # Check if iteration has completed and we haven't printed promise yet
+      if [ ! -f "$promise_file" ]; then
         local promise
         promise=$(extract_promise_from_jsonl "$current_iter")
         if [ -n "$promise" ]; then
           echo "Promise: $promise"
           echo
-          iter_promise_printed[$iter_num]=1
+          touch "$promise_file"
         fi
       fi
     done
@@ -756,7 +750,7 @@ iterate_once() {
   log_file="$logs_dir/iter-${iter_num}-${ts}.jsonl"
 
   # Stream live text output to terminal while writing raw JSONL to file
-  $CLAUDE_CMD --output-format stream-json --effort low --model "$MODEL" --dangerously-skip-permissions -p "$prompt" 2>&1 \
+  $CLAUDE_CMD --output-format stream-json --verbose --effort low --model "$MODEL" --dangerously-skip-permissions -p "$prompt" 2>&1 \
     | grep --line-buffered '^{' \
     | tee "$log_file" \
     | jq -r 'select(.type == "assistant").message.content[]? | select(.type == "text").text // empty | gsub("\n"; "\r\n") | . + "\r\n\n"'
