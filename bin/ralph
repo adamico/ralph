@@ -6,11 +6,12 @@ set -uo pipefail
 usage() {
   cat <<EOF
 Usage:
-  ralph once [-i] [<milestone>]  # one iteration; -i runs claude interactively (milestone required for github backend)
-  ralph run <N> [<milestone>]    # up to N iterations, halts on COMPLETE/BLOCKED
-  ralph ls [<prd|milestone>]     # list PRDs/milestones or show issue queue
-  ralph status                   # inspect running iterations + suspicious processes
-  ralph kill                     # pkill ralph + stop sandbox
+  ralph once [-i] [<milestone>]      # one iteration; -i runs claude interactively (milestone required for github backend)
+  ralph run <N> [<milestone>]        # up to N iterations, halts on COMPLETE/BLOCKED
+  ralph ls [<prd|milestone>]         # list PRDs/milestones or show issue queue
+  ralph status                       # inspect running iterations + suspicious processes
+  ralph inspect [<milestone> [<N>]]  # list iterations or replay iteration N
+  ralph kill                         # pkill ralph + stop sandbox
 EOF
   exit 1
 }
@@ -295,6 +296,153 @@ cmd_kill() {
   fi
 }
 
+extract_issue_from_jsonl() {
+  # Extract issue number from JSONL file (parse from prompt or comments)
+  local log_file="$1"
+  # Look for "Picked issue: #NN" or similar patterns in assistant text
+  jq -r 'select(.type == "assistant").message.content[]? | select(.type == "text").text' < "$log_file" \
+    | grep -oP 'Picked issue: #\K[0-9]+' | head -1 || echo ""
+}
+
+extract_promise_from_jsonl() {
+  # Extract promise result (COMPLETE or BLOCKED) from JSONL file
+  local log_file="$1"
+  local result
+  result=$(jq -r 'select(.type == "result").result // empty' < "$log_file")
+  if [[ "$result" == *"<promise>COMPLETE</promise>"* ]]; then
+    echo "COMPLETE"
+  elif [[ "$result" == *"<promise>BLOCKED</promise>"* ]]; then
+    echo "BLOCKED"
+  else
+    echo ""
+  fi
+}
+
+cmd_inspect_list() {
+  # List all iterations in a scope
+  local scope="$1"
+  local logs_dir=".ralph-logs/$scope"
+
+  if [ ! -d "$logs_dir" ]; then
+    echo "ralph: no logs found for scope '$scope'"
+    return 0
+  fi
+
+  local any_iters=0
+  printf 'Iterations in %s:\n' "$scope"
+  printf '%6s  %-19s  %7s  %s\n' "Iter#" "Timestamp" "Promise" "Issue"
+  printf '%6s  %s  %s  %s\n' "-----" "-------------------" "-------" "-----"
+
+  local -a files
+  mapfile -t files < <(ls -1 "$logs_dir"/iter-* 2>/dev/null | sort -V)
+
+  for log_file in "${files[@]}"; do
+    [ -e "$log_file" ] || continue
+    any_iters=1
+
+    local basename
+    basename=$(basename "$log_file")
+    # Extract iteration number from iter-N-timestamp
+    local iter_num
+    iter_num=$(echo "$basename" | sed 's/iter-\([0-9]*\)-.*/\1/')
+
+    # Extract timestamp from filename (second component)
+    local ts
+    ts=$(echo "$basename" | sed 's/iter-[0-9]*-\([0-9]*\).jsonl/\1/')
+    if [ -n "$ts" ] && [ "$ts" != "$basename" ]; then
+      # Convert Unix timestamp to readable format
+      ts=$(date -d "@$ts" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$ts")
+    fi
+
+    local promise issue
+    promise=$(extract_promise_from_jsonl "$log_file")
+    issue=$(extract_issue_from_jsonl "$log_file")
+
+    printf '%6s  %-19s  %7s  %s\n' "$iter_num" "$ts" "$promise" "${issue:-—}"
+  done
+
+  if [ "$any_iters" = 0 ]; then
+    echo "(no iterations logged)"
+  fi
+  return 0
+}
+
+cmd_inspect_replay() {
+  # Replay a specific iteration
+  local scope="$1" iter_num="$2"
+  local logs_dir=".ralph-logs/$scope"
+
+  if [ ! -d "$logs_dir" ]; then
+    echo "ralph: no logs found for scope '$scope'"
+    return 1
+  fi
+
+  # Find the log file for this iteration
+  local log_file
+  log_file=$(ls "$logs_dir"/iter-"$iter_num"-* 2>/dev/null | head -1)
+  if [ -z "$log_file" ] || [ ! -f "$log_file" ]; then
+    echo "ralph: iteration $iter_num not found in $logs_dir"
+    return 1
+  fi
+
+  # Extract promise result for header
+  local promise
+  promise=$(extract_promise_from_jsonl "$log_file")
+  local issue
+  issue=$(extract_issue_from_jsonl "$log_file")
+
+  echo "=== Iteration $iter_num (Issue #${issue:-?}) ==="
+  [ -n "$promise" ] && echo "Promise: $promise"
+  echo
+
+  # Apply stream_text filter to display clean output
+  jq -r 'select(.type == "assistant").message.content[]? | select(.type == "text").text // empty' < "$log_file"
+
+  return 0
+}
+
+cmd_inspect() {
+  # Inspect logged iterations: list mode or replay mode
+  local milestone="${1:-}" iter_num="${2:-}"
+
+  local scope
+  if [ "$BACKEND" = "github" ]; then
+    # Infer milestone if not provided
+    if [ -z "$milestone" ]; then
+      milestone=$(infer_milestone_gh)
+      rc=$?
+      if [ $rc -ne 0 ]; then
+        return "$rc"
+      fi
+    fi
+    scope="$milestone"
+  else
+    # Filesystem backend: infer from marker or use provided
+    if [ -z "$milestone" ]; then
+      if [ -s "$MARKER_FILE" ]; then
+        milestone=$(tr -d '[:space:]' < "$MARKER_FILE")
+      else
+        echo "ralph: no active PRD in $MARKER_FILE. Provide explicit scope." >&2
+        return 1
+      fi
+    fi
+    scope="$milestone"
+  fi
+
+  # Dispatch based on mode
+  if [ -z "$iter_num" ]; then
+    # List mode
+    cmd_inspect_list "$scope"
+  else
+    # Replay mode
+    if ! [[ "$iter_num" =~ ^[0-9]+$ ]]; then
+      echo "ralph: iteration number must be a non-negative integer" >&2
+      return 1
+    fi
+    cmd_inspect_replay "$scope" "$iter_num"
+  fi
+}
+
 # --- ls subcommand ---------------------------------------------------
 ls_prds() {
   local active=""
@@ -553,6 +701,11 @@ case "$1" in
   status) cmd_status; exit 0 ;;
   kill)   cmd_kill;   exit 0 ;;
   ls)     cmd_ls "${2:-}"; exit $? ;;
+  inspect)
+    shift
+    cmd_inspect "$@"
+    exit $?
+    ;;
   once)
     shift
     iterate_once "$@"
