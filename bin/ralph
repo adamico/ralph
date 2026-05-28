@@ -505,6 +505,11 @@ iterate_once() {
   local logs_dir=".ralph-logs/$scope"
   mkdir -p "$logs_dir" || { echo "ralph: failed to create logs directory" >&2; return 1; }
 
+  # Create session marker (PID file) and set up cleanup trap
+  local running_file="$logs_dir/running"
+  echo "$$" > "$running_file" || { echo "ralph: failed to create running file" >&2; return 1; }
+  trap "rm -f '$running_file'" EXIT
+
   local ts iter_num log_file
   ts=$(date +%s)
   iter_num=$(ls "$logs_dir"/iter-* 2>/dev/null | wc -l | awk '{print $1+1}')
