@@ -1,0 +1,100 @@
+#!/bin/bash
+set -euo pipefail
+
+# DragonRuby engine provisioner for sandbox (ADR-0022).
+# Copies pre-baked engine from /opt/dragonruby-linux-arm64.
+# Supports --os linux-arm64 (only); other OSes unsupported in sandbox.
+# Supports --mygame copy|none (default: copy).
+
+usage() {
+  cat >&2 <<'EOF'
+usage: dr-update [<dir>] [options]
+
+Provision DragonRuby engine in sandbox (ADR-0022).
+
+Options:
+  --os PLATFORM        linux-arm64 (only; sandbox is linux-arm64 runtime)
+  --mygame MODE        copy or none (default: copy)
+  --help               Show this help message
+
+Example:
+  dr-update . --os linux-arm64 --mygame copy
+EOF
+  exit 1
+}
+
+TARGET_DIR="."
+OS="linux-arm64"
+MYGAME_MODE="copy"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --os)
+      OS="$2"
+      shift 2
+      ;;
+    --mygame)
+      MYGAME_MODE="$2"
+      if [[ ! "$MYGAME_MODE" =~ ^(copy|none)$ ]]; then
+        echo "ERROR: --mygame must be copy or none" >&2
+        exit 1
+      fi
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      ;;
+    *)
+      if [[ "$TARGET_DIR" == "." ]]; then
+        TARGET_DIR="$1"
+      else
+        echo "ERROR: unexpected argument $1" >&2
+        usage
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [[ "$OS" != "linux-arm64" ]]; then
+  echo "ERROR: only linux-arm64 is supported in sandbox (found: $OS)" >&2
+  exit 1
+fi
+
+# Resolve to absolute path
+if [[ "$TARGET_DIR" != /* ]]; then
+  TARGET_DIR="$(cd "$TARGET_DIR" 2>/dev/null && pwd)"
+fi
+
+if [[ ! -d "$TARGET_DIR" ]]; then
+  echo "ERROR: target directory not found: $TARGET_DIR" >&2
+  exit 1
+fi
+
+ENGINE_DIR="$TARGET_DIR/dragonruby-${OS}"
+
+# Copy engine from baked location (idempotent: no-op if it exists)
+if [[ ! -d "$ENGINE_DIR" ]]; then
+  cp -a /opt/dragonruby-linux-arm64 "$ENGINE_DIR"
+  echo "Provisioned $ENGINE_DIR"
+else
+  echo "$ENGINE_DIR already exists (skipping engine copy)"
+fi
+
+# Handle mygame: always copy the canonical mygame if requested
+if [[ "$MYGAME_MODE" == "copy" ]]; then
+  CANONICAL_MYGAME="$TARGET_DIR/dragonruby-macos/mygame"
+  if [[ ! -d "$CANONICAL_MYGAME" ]]; then
+    echo "ERROR: canonical dragonruby-macos/mygame not found" >&2
+    exit 1
+  fi
+
+  DEST_MYGAME="$ENGINE_DIR/mygame"
+  rm -rf "$DEST_MYGAME"
+  cp -a "$CANONICAL_MYGAME" "$DEST_MYGAME"
+  echo "Copied mygame to $DEST_MYGAME"
+elif [[ "$MYGAME_MODE" == "none" ]]; then
+  echo "Skipping mygame (--mygame none)"
+fi
+
+echo "✓ Engine ready: $ENGINE_DIR"
