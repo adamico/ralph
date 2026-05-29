@@ -11,6 +11,7 @@ Usage:
   ralph ls [<prd|milestone>]         # list PRDs/milestones or show issue queue
   ralph status                       # inspect running iterations + suspicious processes
   ralph inspect [<milestone> [<N>]]  # list iterations or replay iteration N
+  ralph recover [<milestone>]        # print recovery runbook for interrupted iteration
   ralph kill                         # pkill ralph + stop sandbox
 EOF
   exit 1
@@ -757,6 +758,79 @@ ls_issues_gh() {
   fi
 }
 
+cmd_recover() {
+  # Print recovery runbook for an interrupted iteration from baseline.
+  # Print-only: never executes git push --force-with-lease.
+  local milestone="${1:-}"
+
+  if [ "$BACKEND" = "github" ]; then
+    command -v gh >/dev/null 2>&1 || { echo "ralph: 'gh' CLI not found" >&2; return 1; }
+    command -v jq >/dev/null 2>&1 || { echo "ralph: 'jq' not found" >&2; return 1; }
+
+    # Infer milestone if not provided
+    if [ -z "$milestone" ]; then
+      milestone=$(infer_milestone_gh)
+      rc=$?
+      if [ $rc -ne 0 ]; then
+        return "$rc"
+      fi
+    fi
+
+    local scope="$milestone"
+  else
+    # Filesystem backend: infer from marker
+    if [ -z "$milestone" ]; then
+      if [ -s "$MARKER_FILE" ]; then
+        milestone=$(tr -d '[:space:]' < "$MARKER_FILE")
+      else
+        echo "ralph: no active PRD in $MARKER_FILE. Provide explicit scope." >&2
+        return 1
+      fi
+    fi
+    scope="$milestone"
+  fi
+
+  # Read baseline
+  if ! read_baseline "$scope"; then
+    echo "ralph: no baseline found in scope '$scope'" >&2
+    return 1
+  fi
+
+  local baseline_sha="$BASELINE_SHA"
+  local baseline_issue="$BASELINE_ISSUE"
+  local baseline_branch="$BASELINE_BRANCH"
+
+  # Confirm the issue is still open/ready
+  if [ "$BACKEND" = "github" ]; then
+    local repo_flag=""
+    [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
+    local issue_state
+    issue_state=$(gh issue view "$baseline_issue" $repo_flag --json state -q .state 2>/dev/null)
+    if [ "$issue_state" != "OPEN" ]; then
+      echo "ralph: warning: issue #$baseline_issue is not OPEN (state: $issue_state)" >&2
+    fi
+  else
+    # Filesystem backend: check if issue file exists and has Status: ready
+    local issue_file=".scratch/$scope/issues/${baseline_issue}.md"
+    if [ ! -f "$issue_file" ]; then
+      echo "ralph: warning: issue file '$issue_file' not found" >&2
+    else
+      local status
+      status=$(grep -m1 '^Status:' "$issue_file" | awk '{print $2}')
+      if [ "$status" != "ready" ] && [ "$status" != "done" ]; then
+        echo "ralph: warning: issue $baseline_issue has status '$status' (expected ready/done)" >&2
+      fi
+    fi
+  fi
+
+  # Print the recovery runbook
+  echo "Recovery runbook for scope '$scope' (issue #$baseline_issue on branch $baseline_branch):"
+  echo
+  recovery_plan "$baseline_sha" "$scope" "$baseline_issue" "$baseline_branch"
+  echo
+  echo "ralph: the 'git push --force-with-lease' step must be run by the human operator."
+}
+
 cmd_ls() {
   local arg="${1:-}"
   if [ "$BACKEND" = "github" ]; then
@@ -890,6 +964,11 @@ case "$1" in
   inspect)
     shift
     cmd_inspect "$@"
+    exit $?
+    ;;
+  recover)
+    shift
+    cmd_recover "${1:-}"
     exit $?
     ;;
   once)
