@@ -107,6 +107,33 @@ A single skill invocation scaffolds every detected port:
 Idempotent: a port that already has a `.ralph.conf` is reported as
 configured and **skipped** unless the user chooses to update it.
 
+### Orchestrator (main flow)
+
+The single top-level procedure for a monorepo. Run top-to-bottom in **one**
+skill invocation; each step links to its detailed subsection below.
+
+1. **Scan** — run [Engine detection](#engine-detection). Yields the ordered,
+   deduped `(port-dir, console, tier)` list.
+2. **Confirm** — print the detected set and ask to proceed. The user may drop or
+   correct entries; abort writes nothing.
+3. **Loop ports** — for each `(port, console, tier)` **in order**:
+   - **Idempotency:** if `<port>/.ralph.conf` already exists, report it
+     *configured* and ask "update? (default **skip**)". Skip unless the user
+     opts in.
+   - Otherwise **dispatch by tier** to the matching recipe and record the
+     outcome (scaffolded / skipped / failed):
+
+     | Tier | Recipe |
+     |---|---|
+     | host-fallback (pico8, picotron) | [Per-port config → host-fallback](#per-port-config-all-tiers) |
+     | standard (littlejs)             | [Per-port config → standard](#per-port-config-all-tiers) |
+     | mature-external (dragonruby)    | [dragonruby guided import](#mature-external-recipe-dragonruby-guided-import) |
+4. **Root config** — offer the
+   [root engine-agnostic config](#root-engine-agnostic-config) **last**, for
+   cross-cutting work.
+5. **Summary** — print the per-port [Summary](#summary): what was scaffolded,
+   what was skipped (already configured), and what remains TODO.
+
 ### Engine detection
 
 Scan `build/*/` first; **fall back** to a general marker-scan at
@@ -179,7 +206,32 @@ echo "TODO: sandbox build recipe not yet implemented for this console" >&2
 exit 0
 ```
 
-**standard (littlejs):** — see TODO #21 below.
+**standard (littlejs):** — use bundled template from `recipes/littlejs/`.
+
+1. **Ensure vitest + eslint** in the port's `package.json`. If missing, offer:
+   ```bash
+   npm install --save-dev vitest eslint @eslint/js
+   ```
+   Ask user: "Install Vitest + ESLint now? (recommended)" before running.
+
+2. **Copy bundled template** to the port (rewriting SANDBOX_NAME and TEMPLATE_TAG):
+
+   | Source (bundled)        | Destination                 |
+   |---|---|
+   | `recipes/littlejs/build.sh` | `<port>/.sbx/build.sh` |
+   | `recipes/littlejs/Dockerfile` | `<port>/.sbx/Dockerfile` |
+
+3. **Verify** — `shellcheck <port>/.sbx/build.sh` must pass clean.
+
+4. **Emit config** — `<port>/.ralph.conf`:
+
+   ```bash
+   CLAUDE_CMD="sbx run <repo>-littlejs --"
+   TEST_CMD="npx vitest run"
+   LINT_CMD="npx eslint ."
+   ```
+
+5. **Optional: Build sandbox template now?** — Ask user whether to run `.sbx/build.sh` immediately (`SANDBOX_NAME=<repo>-littlejs TEMPLATE_TAG=<repo>-littlejs bash .sbx/build.sh`) or defer to first ralph run. Building now validates the setup; deferring allows ralph to batch multiple ports. If building, report success/failure.
 
 **mature-external (dragonruby):** — see the dragonruby guided import below.
 
@@ -285,23 +337,15 @@ Docker recipes, etc.).
 
 ---
 
-## TODO — remaining work (tracked as ready-for-human issues)
+## Known limitations
 
-These tiers/steps need an interactive session (external repo access, a
-licensed binary, npm/sbx, file-by-file confirmation) and are **not yet
-authored** in this skill. See the linked issues for full implementation
-notes:
-
-- **#21 — standard recipe (littlejs):** scaffold a node/vitest sbx
-  template `<repo>-littlejs`, `TEST_CMD="npx vitest run"`,
-  `LINT_CMD="npx eslint ."` (reuse the JS-setup install logic).
-  `CLAUDE_CMD="sbx run <repo>-littlejs --"`.
-- **#25 — orchestrator:** wire scan → confirm → loop → root → summary
-  into the single top-level flow, with idempotent skip.
-
-Done and authored above: **#22** (bundled `recipes/dragonruby/`) and
-**#24** (dragonruby guided import — see *mature-external recipe* under
-the monorepo flow).
+- **host-fallback tiers (pico8, picotron) have no sandbox recipe.** Their
+  `.sbx/build.sh` is a stub and `TEST_CMD`/`LINT_CMD` are no-ops; `CLAUDE_CMD`
+  runs on the host. A real code-judo Docker recipe (cf. dragonruby
+  ADR-0016/ADR-0022) is not yet implemented.
+- The monorepo flow assumes an interactive session — external repo access
+  (locomotion), a licensed linux-arm64 binary, and npm/sbx availability. It is
+  authored but not yet validated end-to-end against a live monorepo.
 
 ---
 
