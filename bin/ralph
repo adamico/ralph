@@ -300,8 +300,9 @@ extract_issue_from_jsonl() {
   # Extract issue number from JSONL file (parse from prompt or comments)
   local log_file="$1"
   # Look for "Picked issue: #NN" or similar patterns in assistant text
+  # grep -oE (POSIX/BSD-portable; macOS grep lacks -P/\K)
   jq -r 'select(.type == "assistant").message.content[]? | select(.type == "text").text' < "$log_file" \
-    | grep -oP 'Picked issue: #\K[0-9]+' | head -1 || echo ""
+    | grep -oE 'Picked issue: #[0-9]+' | grep -oE '[0-9]+' | head -1 || echo ""
 }
 
 extract_promise_from_jsonl() {
@@ -593,10 +594,14 @@ cmd_inspect_list() {
   printf '%6s  %-19s  %7s  %s\n' "Iter#" "Timestamp" "Promise" "Issue"
   printf '%6s  %s  %s  %s\n' "-----" "-------------------" "-------" "-----"
 
-  local -a files
-  mapfile -t files < <(ls -1 "$logs_dir"/iter-* 2>/dev/null | sort -V)
+  # bash 3 compat (no mapfile) and set -u safe (guard empty array)
+  local files=()
+  local f
+  while IFS= read -r f; do
+    [ -n "$f" ] && files+=("$f")
+  done < <(ls -1 "$logs_dir"/iter-* 2>/dev/null | sort -V)
 
-  for log_file in "${files[@]}"; do
+  [ ${#files[@]} -eq 0 ] || for log_file in "${files[@]}"; do
     [ -e "$log_file" ] || continue
     any_iters=1
 
