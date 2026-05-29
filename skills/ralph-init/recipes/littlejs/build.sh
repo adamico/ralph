@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
-# Build the `<repo>-littlejs` sbx template (standard tier).
+# Build the `<repo>-littlejs` sbx sandbox (standard tier).
 #
-# Creates a Node.js sandbox with vitest and eslint pre-configured.
-# Snapshots a `node:20` image with npm dependencies pre-installed
-# so ralph can run tests and lint without per-iteration setup cost.
+# Bare node:20 sandbox mounting the GIT ROOT (so the agent has .git for
+# commit/push and the harness can autodetect the branch). Project deps are NOT
+# pre-installed here — the dual-mode `run_tests` harness builds clean linux deps
+# via `npm ci` inside a fresh /tmp clone (remote mode), so a host-mounted
+# node_modules is never shared into the linux container.
 #
-# Re-run any time package.json or system deps change.
+# Re-run if the base image or system deps change.
 
 set -euo pipefail
 
-SANDBOX_NAME="${SANDBOX_NAME:-claude-littlejs}"
-TEMPLATE_TAG="${TEMPLATE_TAG:-littlejs}"
+# Sandbox mounts the git root, not the port dir, so the agent has .git.
+GIT_ROOT="$(git rev-parse --show-toplevel)"
+REPO="$(basename "$GIT_ROOT")"
+SANDBOX_NAME="${SANDBOX_NAME:-${REPO}-littlejs}"
 
-echo ">> building $TEMPLATE_TAG (node:20)"
+echo ">> building sandbox $SANDBOX_NAME (node:20, mount $GIT_ROOT)"
 
 # Ensure sbx is available
 if ! command -v sbx >/dev/null 2>&1; then
@@ -26,17 +30,19 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
-# Create or verify sandbox exists
+# Create the sandbox if it does not already exist
 if ! sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$SANDBOX_NAME"; then
-  echo ">> creating base sandbox"
-  sbx create --name "$SANDBOX_NAME" --image "node:20" .
+  echo ">> creating sandbox"
+  sbx create --name "$SANDBOX_NAME" --image "node:20" "$GIT_ROOT"
 fi
 
-echo ">> installing npm dependencies"
-sbx exec -i "$SANDBOX_NAME" bash -c 'cd /workspace && npm ci' || {
-  echo "Warning: npm ci failed, trying npm install" >&2
-  sbx exec -i "$SANDBOX_NAME" bash -c 'cd /workspace && npm install' || true
-}
+# Ensure git + the claude-code CLI are present inside the sandbox (AFK runs
+# claude in-sandbox via CLAUDE_CMD="sbx run $SANDBOX_NAME --").
+echo ">> ensuring git + claude-code CLI"
+sbx exec -i "$SANDBOX_NAME" bash -c '
+  command -v git >/dev/null 2>&1 || (apt-get update && apt-get install -y git)
+  command -v claude >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code
+'
 
-echo ">> built $TEMPLATE_TAG template: $SANDBOX_NAME"
+echo ">> built sandbox: $SANDBOX_NAME"
 echo "Use: sbx run $SANDBOX_NAME -- <command>"

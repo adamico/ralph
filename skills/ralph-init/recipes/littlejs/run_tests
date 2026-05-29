@@ -1,0 +1,91 @@
+#!/bin/sh
+set -eu
+
+# Dual-mode test harness for a LittleJS (node/vitest) ralph port.
+# Standard-tier sibling of the dragonruby ADR-0022 harness (adamico/locomotion).
+#
+#   <ENGINE>_TEST_SOURCE=local  (default below: remote) — run vitest/eslint on
+#                                 the host workspace in place. Picks up
+#                                 uncommitted WIP; fast human iteration.
+#   <ENGINE>_TEST_SOURCE=remote (default) — fresh `git clone` of the GitHub
+#                                 origin into /tmp INSIDE the sandbox, then
+#                                 `npm ci` there. Keeps clean linux deps and
+#                                 never shares the bind-mounted host (darwin)
+#                                 node_modules into the linux container.
+#
+# MODEL (B), push-before-green: remote mode tests origin/<branch>, so the agent
+# MUST commit AND push before the clone reflects its changes. (ADR-0022:
+# "WIP must be pushed to be testable.")
+#
+# Usage: ./run_tests test | lint
+#
+# The skill substitutes the <ENGINE> prefix (e.g. LITTLEJS_/OBSI_) when it
+# instantiates this recipe for a port. This template uses LITTLEJS_.
+
+MODE="${1:-test}"
+SRC="${LITTLEJS_TEST_SOURCE:-remote}"
+PORT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TIMEOUT_SECS="${LITTLEJS_TIMEOUT_SECS:-300}"
+
+case "$MODE" in
+  test|lint) ;;
+  *) echo "Usage: $0 test|lint" >&2; exit 2 ;;
+esac
+
+# Wrap in a timeout when one is available (coreutils `timeout` in the linux
+# sandbox, `gtimeout` on macOS hosts); run bare if neither is present.
+guard() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$TIMEOUT_SECS" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$TIMEOUT_SECS" "$@"
+  else
+    "$@"
+  fi
+}
+
+run() {
+  case "$1" in
+    test) guard npx vitest run ;;
+    lint) guard npx eslint . ;;
+  esac
+  exit $?
+}
+
+if [ "$SRC" = "local" ]; then
+  cd "$PORT_DIR"
+  run "$MODE"
+fi
+
+# remote: isolated fresh clone in the sandbox.
+# Auto-derive the GitHub origin and the port's subdir relative to the git root,
+# so this works for monorepo ports (build/<console>) and standalone repos alike.
+GIT_ROOT="$(git -C "$PORT_DIR" rev-parse --show-toplevel)"
+PORT_SUBDIR="${PORT_DIR#"$GIT_ROOT"/}"
+[ "$PORT_SUBDIR" = "$PORT_DIR" ] && PORT_SUBDIR=""   # script sits at git root
+
+REMOTE="${LITTLEJS_REMOTE:-$(git -C "$PORT_DIR" remote get-url origin)}"
+CLONE="${LITTLEJS_CLONE:-/tmp/$(basename "$GIT_ROOT")-littlejs}"
+
+REF="${LITTLEJS_TEST_REF:-$(git -C "$PORT_DIR" branch --show-current 2>/dev/null || echo "")}"
+[ -z "$REF" ] && REF="main"
+
+if [ ! -d "$CLONE/.git" ]; then
+  echo "Cloning $REMOTE -> $CLONE..."
+  git clone "$REMOTE" "$CLONE"
+else
+  echo "Refreshing clone at $CLONE..."
+  git -C "$CLONE" fetch origin
+fi
+echo "Checking out origin/$REF..."
+git -C "$CLONE" fetch origin "$REF"
+git -C "$CLONE" reset --hard "origin/$REF"
+
+if [ -n "$PORT_SUBDIR" ]; then
+  cd "$CLONE/$PORT_SUBDIR"
+else
+  cd "$CLONE"
+fi
+echo "Installing deps in clone..."
+npm ci || npm install
+run "$MODE"
