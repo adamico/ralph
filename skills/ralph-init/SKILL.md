@@ -179,7 +179,32 @@ echo "TODO: sandbox build recipe not yet implemented for this console" >&2
 exit 0
 ```
 
-**standard (littlejs):** — see TODO #21 below.
+**standard (littlejs):** — use bundled template from `recipes/littlejs/`.
+
+1. **Ensure vitest + eslint** in the port's `package.json`. If missing, offer:
+   ```bash
+   npm install --save-dev vitest eslint @eslint/js
+   ```
+   Ask user: "Install Vitest + ESLint now? (recommended)" before running.
+
+2. **Copy bundled template** to the port (rewriting SANDBOX_NAME and TEMPLATE_TAG):
+
+   | Source (bundled)        | Destination                 |
+   |---|---|
+   | `recipes/littlejs/build.sh` | `<port>/.sbx/build.sh` |
+   | `recipes/littlejs/Dockerfile` | `<port>/.sbx/Dockerfile` |
+
+3. **Verify** — `shellcheck <port>/.sbx/build.sh` must pass clean.
+
+4. **Emit config** — `<port>/.ralph.conf`:
+
+   ```bash
+   CLAUDE_CMD="sbx run <repo>-littlejs --"
+   TEST_CMD="npx vitest run"
+   LINT_CMD="npx eslint ."
+   ```
+
+5. **Optional: Build sandbox template now?** — Ask user whether to run `.sbx/build.sh` immediately (`SANDBOX_NAME=<repo>-littlejs TEMPLATE_TAG=<repo>-littlejs bash .sbx/build.sh`) or defer to first ralph run. Building now validates the setup; deferring allows ralph to batch multiple ports. If building, report success/failure.
 
 **mature-external (dragonruby):** — see the dragonruby guided import below.
 
@@ -287,21 +312,18 @@ Docker recipes, etc.).
 
 ## TODO — remaining work (tracked as ready-for-human issues)
 
-These tiers/steps need an interactive session (external repo access, a
+These steps need an interactive session (external repo access, a
 licensed binary, npm/sbx, file-by-file confirmation) and are **not yet
-authored** in this skill. See the linked issues for full implementation
-notes:
+fully implemented** in this skill. See the linked issues for full
+implementation notes:
 
-- **#21 — standard recipe (littlejs):** scaffold a node/vitest sbx
-  template `<repo>-littlejs`, `TEST_CMD="npx vitest run"`,
-  `LINT_CMD="npx eslint ."` (reuse the JS-setup install logic).
-  `CLAUDE_CMD="sbx run <repo>-littlejs --"`.
 - **#25 — orchestrator:** wire scan → confirm → loop → root → summary
   into the single top-level flow, with idempotent skip.
 
-Done and authored above: **#22** (bundled `recipes/dragonruby/`) and
-**#24** (dragonruby guided import — see *mature-external recipe* under
-the monorepo flow).
+Done and authored above: **#21** (littlejs standard recipe — see
+*standard* under the monorepo flow), **#22** (bundled
+`recipes/dragonruby/`), and **#24** (dragonruby guided import — see
+*mature-external recipe* under the monorepo flow).
 
 ---
 
