@@ -349,6 +349,37 @@ cmd_status() {
   else
     echo "(no SANDBOX_NAME — set in .ralph.conf to inspect sandbox)"
   fi
+
+  # Detect interrupted iterations (dead PID + baseline present)
+  if [ -d ".ralph-logs" ]; then
+    local any_interrupted=0
+    for scope_dir in .ralph-logs/*/; do
+      [ -d "$scope_dir" ] || continue
+      local scope
+      scope=$(basename "$scope_dir")
+      local running_file baseline_file
+      running_file="$scope_dir/running"
+      baseline_file="$scope_dir/baseline"
+
+      # Check if both running and baseline files exist
+      if [ -f "$running_file" ] && [ -f "$baseline_file" ]; then
+        local pid
+        pid=$(cat "$running_file" 2>/dev/null)
+        # Check if PID is alive: kill -0 returns 0 if process exists, 1 if not
+        if ! kill -0 "$pid" 2>/dev/null; then
+          # PID is dead; read baseline
+          if read_baseline "$scope"; then
+            if [ "$any_interrupted" = 0 ]; then
+              echo
+              echo "--- INTERRUPTED iterations (dead PID + baseline) ---"
+              any_interrupted=1
+            fi
+            printf "  scope: %-30s  issue: #%-4s  branch: %s\n" "$scope" "$BASELINE_ISSUE" "$BASELINE_BRANCH"
+          fi
+        fi
+      fi
+    done
+  fi
 }
 
 cmd_kill() {
