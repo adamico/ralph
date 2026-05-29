@@ -239,6 +239,53 @@ Follow these priority rules (ADR-0015 style). Do not ask questions — act.
 EOF
 }
 
+record_baseline() {
+  # Write iteration baseline to .ralph-logs/<scope>/baseline containing:
+  #   sha=<HEAD commit SHA>
+  #   issue=<issue identifier>
+  #   branch=<current branch name>
+  #   timestamp=<unix timestamp>
+  # Overwrites on each iteration (only latest matters).
+  local scope="$1" issue_id="$2"
+  local logs_dir=".ralph-logs/$scope"
+  local baseline_file="$logs_dir/baseline"
+
+  local sha branch ts
+  sha=$(git rev-parse HEAD)
+  branch=$(git branch --show-current)
+  ts=$(date +%s)
+
+  cat > "$baseline_file" <<EOF
+sha=$sha
+issue=$issue_id
+branch=$branch
+timestamp=$ts
+EOF
+}
+
+read_baseline() {
+  # Parse iteration baseline from .ralph-logs/<scope>/baseline.
+  # Sets global variables: BASELINE_SHA, BASELINE_ISSUE, BASELINE_BRANCH, BASELINE_TIMESTAMP.
+  # Returns 0 on success, 1 if file missing.
+  local scope="$1"
+  local baseline_file=".ralph-logs/$scope/baseline"
+
+  if [ ! -f "$baseline_file" ]; then
+    return 1
+  fi
+
+  # Source the baseline file to set variables
+  # shellcheck disable=SC1090
+  . "$baseline_file"
+
+  BASELINE_SHA="$sha"
+  BASELINE_ISSUE="$issue"
+  BASELINE_BRANCH="$branch"
+  BASELINE_TIMESTAMP="$timestamp"
+
+  return 0
+}
+
 # --- load project config ---------------------------------------------
 SANDBOX_NAME=""
 [ -f ./.ralph.conf ] && . ./.ralph.conf
@@ -703,6 +750,8 @@ iterate_once() {
       echo "<promise>COMPLETE</promise>"
       return 20
     fi
+    # Record baseline before Claude invocation
+    record_baseline "$milestone" "$pick"
     prompt=$(build_prompt_gh "$milestone" "$pick")
   else
     if [ ! -s "$MARKER_FILE" ]; then
