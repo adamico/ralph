@@ -286,6 +286,21 @@ read_baseline() {
   return 0
 }
 
+recovery_plan() {
+  # Generate ordered list of commands to redo an interrupted iteration from scratch.
+  # Pure function: no git invocation, no network, no filesystem writes.
+  # Takes: baseline_sha (HEAD before interrupted iteration), milestone, issue, branch
+  # Returns: text list of commands in order (never includes 'main', uses branch verbatim)
+  local baseline_sha="$1" milestone="$2" issue="$3" branch="$4"
+
+  cat <<EOF
+git reset --hard $baseline_sha
+git clean -fdx
+git push --force-with-lease origin $branch
+ralph run 1 $milestone
+EOF
+}
+
 # --- load project config ---------------------------------------------
 SANDBOX_NAME=""
 [ -f ./.ralph.conf ] && . ./.ralph.conf
