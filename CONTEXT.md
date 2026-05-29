@@ -42,3 +42,21 @@ the sandbox, isolating linux build deps from the bind-mounted host). `remote`
 sees **pushed commits only** — the agent must commit and push before tests
 reflect its work. See ADR-0008 (push timing / test oracle) and ADR-0022 in
 `adamico/locomotion`.
+
+**Engagement branch** — the stable branch a Model B engagement runs on, named
+`ralph/<milestone>`. In remote test source it is the test oracle (`origin/<branch>`),
+so the agent commits and pushes onto it for the whole engagement. Created by a
+human before launch; never `main`. Force-pushed **only** during recovery. See
+ADR-0009.
+
+**Iteration baseline** — the HEAD commit captured at the start of an iteration,
+before Claude is invoked. The reset target when redoing an interrupted iteration:
+it marks the tip after the last successfully-closed issue (or the branch point for
+the first issue). Recorded by ralph per iteration.
+
+**Interrupted iteration** — an iteration killed mid-flight (credit exhaustion,
+crash) between commit-on-success and stash-on-failure. Leaves indeterminate state:
+the issue still `open`/`ready`, a dirty working tree, and — in Model B — WIP commits
+already pushed to the engagement branch. Recovered by **redo-from-scratch**: reset
+to the [[iteration-baseline]], clean, force-push the engagement branch, then re-run
+(ralph re-picks the same issue). Not a resume. See ADR-0009.

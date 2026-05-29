@@ -11,6 +11,7 @@ Usage:
   ralph ls [<prd|milestone>]         # list PRDs/milestones or show issue queue
   ralph status                       # inspect running iterations + suspicious processes
   ralph inspect [<milestone> [<N>]]  # list iterations or replay iteration N
+  ralph recover [<milestone>]        # print recovery runbook for interrupted iteration
   ralph kill                         # pkill ralph + stop sandbox
 EOF
   exit 1
@@ -239,6 +240,73 @@ Follow these priority rules (ADR-0015 style). Do not ask questions — act.
 EOF
 }
 
+record_baseline() {
+  # Write iteration baseline to .ralph-logs/<scope>/baseline containing:
+  #   sha=<HEAD commit SHA>
+  #   issue=<issue identifier>
+  #   branch=<current branch name>
+  #   timestamp=<unix timestamp>
+  # Overwrites on each iteration (only latest matters).
+  local scope="$1" issue_id="$2"
+  local logs_dir=".ralph-logs/$scope"
+  local baseline_file="$logs_dir/baseline"
+
+  # Ensure the scope dir exists — record_baseline runs before the
+  # non-interactive path's mkdir, so on the first iteration of a fresh
+  # scope the dir is otherwise absent and the write would fail silently.
+  mkdir -p "$logs_dir" || { echo "ralph: failed to create logs directory" >&2; return 1; }
+
+  local sha branch ts
+  sha=$(git rev-parse HEAD)
+  branch=$(git branch --show-current)
+  ts=$(date +%s)
+
+  cat > "$baseline_file" <<EOF
+sha=$sha
+issue=$issue_id
+branch=$branch
+timestamp=$ts
+EOF
+}
+
+read_baseline() {
+  # Parse iteration baseline from .ralph-logs/<scope>/baseline.
+  # Sets global variables: BASELINE_SHA, BASELINE_ISSUE, BASELINE_BRANCH, BASELINE_TIMESTAMP.
+  # Returns 0 on success, 1 if file missing.
+  local scope="$1"
+  local baseline_file=".ralph-logs/$scope/baseline"
+
+  if [ ! -f "$baseline_file" ]; then
+    return 1
+  fi
+
+  # Parse key=value lines (do NOT source — the file holds untrusted
+  # branch/issue strings that must not be evaluated as shell).
+  _bl_val() { grep -m1 "^$1=" "$baseline_file" | cut -d= -f2-; }
+  BASELINE_SHA=$(_bl_val sha)
+  BASELINE_ISSUE=$(_bl_val issue)
+  BASELINE_BRANCH=$(_bl_val branch)
+  BASELINE_TIMESTAMP=$(_bl_val timestamp)
+  unset -f _bl_val
+
+  return 0
+}
+
+recovery_plan() {
+  # Generate ordered list of commands to redo an interrupted iteration from scratch.
+  # Pure function: no git invocation, no network, no filesystem writes.
+  # Takes: baseline_sha (HEAD before interrupted iteration), milestone, issue, branch
+  # Returns: text list of commands in order (never includes 'main', uses branch verbatim)
+  local baseline_sha="$1" milestone="$2" issue="$3" branch="$4"
+
+  cat <<EOF
+git reset --hard $baseline_sha
+git clean -fdx
+git push --force-with-lease origin $branch
+ralph run 1 $milestone
+EOF
+}
+
 # --- load project config ---------------------------------------------
 SANDBOX_NAME=""
 [ -f ./.ralph.conf ] && . ./.ralph.conf
@@ -286,6 +354,38 @@ cmd_status() {
     echo "(processes flagged [STUCK?] have used >${STUCK_CPU_SECS}s CPU)"
   else
     echo "(no SANDBOX_NAME — set in .ralph.conf to inspect sandbox)"
+  fi
+
+  # Detect interrupted iterations (dead PID + baseline present)
+  if [ -d ".ralph-logs" ]; then
+    local any_interrupted=0
+    for scope_dir in .ralph-logs/*/; do
+      [ -d "$scope_dir" ] || continue
+      local scope
+      scope=$(basename "$scope_dir")
+      local running_file baseline_file
+      running_file="$scope_dir/running"
+      baseline_file="$scope_dir/baseline"
+
+      # Check if both running and baseline files exist
+      if [ -f "$running_file" ] && [ -f "$baseline_file" ]; then
+        local pid
+        pid=$(cat "$running_file" 2>/dev/null)
+        # A non-numeric/empty PID is a corrupt marker — treat as dead.
+        # Otherwise kill -0 returns 0 if the process exists, 1 if not.
+        if ! [[ "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" 2>/dev/null; then
+          # PID is dead; read baseline
+          if read_baseline "$scope"; then
+            if [ "$any_interrupted" = 0 ]; then
+              echo
+              echo "--- INTERRUPTED iterations (dead PID + baseline) ---"
+              any_interrupted=1
+            fi
+            printf "  scope: %-30s  issue: #%-4s  branch: %s\n" "$scope" "$BASELINE_ISSUE" "$BASELINE_BRANCH"
+          fi
+        fi
+      fi
+    done
   fi
 }
 
@@ -664,6 +764,84 @@ ls_issues_gh() {
   fi
 }
 
+cmd_recover() {
+  # Print recovery runbook for an interrupted iteration from baseline.
+  # Print-only: never executes git push --force-with-lease.
+  local milestone="${1:-}"
+
+  if [ "$BACKEND" = "github" ]; then
+    command -v gh >/dev/null 2>&1 || { echo "ralph: 'gh' CLI not found" >&2; return 1; }
+    command -v jq >/dev/null 2>&1 || { echo "ralph: 'jq' not found" >&2; return 1; }
+
+    # Infer milestone if not provided
+    if [ -z "$milestone" ]; then
+      milestone=$(infer_milestone_gh)
+      rc=$?
+      if [ $rc -ne 0 ]; then
+        return "$rc"
+      fi
+    fi
+
+    local scope="$milestone"
+  else
+    # Filesystem backend: infer from marker
+    if [ -z "$milestone" ]; then
+      if [ -s "$MARKER_FILE" ]; then
+        milestone=$(tr -d '[:space:]' < "$MARKER_FILE")
+      else
+        echo "ralph: no active PRD in $MARKER_FILE. Provide explicit scope." >&2
+        return 1
+      fi
+    fi
+    scope="$milestone"
+  fi
+
+  # Read baseline
+  if ! read_baseline "$scope"; then
+    echo "ralph: no baseline found in scope '$scope'" >&2
+    return 1
+  fi
+
+  local baseline_sha="$BASELINE_SHA"
+  local baseline_issue="$BASELINE_ISSUE"
+  local baseline_branch="$BASELINE_BRANCH"
+
+  # Confirm the issue is still open/ready. Skip when the issue is unknown
+  # (fs backend records an empty issue — Claude picks at iteration time).
+  if [ -z "$baseline_issue" ]; then
+    : # nothing to confirm
+  elif [ "$BACKEND" = "github" ]; then
+    local repo_flag=""
+    [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
+    local issue_state
+    issue_state=$(gh issue view "$baseline_issue" $repo_flag --json state -q .state 2>/dev/null)
+    if [ "$issue_state" != "OPEN" ]; then
+      echo "ralph: warning: issue #$baseline_issue is not OPEN (state: $issue_state)" >&2
+    fi
+  else
+    # Filesystem backend: check if issue file exists and has Status: ready
+    local issue_file=".scratch/$scope/issues/${baseline_issue}.md"
+    if [ ! -f "$issue_file" ]; then
+      echo "ralph: warning: issue file '$issue_file' not found" >&2
+    else
+      local status
+      status=$(grep -m1 '^Status:' "$issue_file" | awk '{print $2}')
+      # Redo-from-scratch expects a still-pending issue. 'done' means the
+      # work completed — recovering it would redo finished work.
+      if [ "$status" != "ready" ]; then
+        echo "ralph: warning: issue $baseline_issue has status '$status' (expected ready)" >&2
+      fi
+    fi
+  fi
+
+  # Print the recovery runbook
+  echo "Recovery runbook for scope '$scope' (issue #$baseline_issue on branch $baseline_branch):"
+  echo
+  recovery_plan "$baseline_sha" "$scope" "$baseline_issue" "$baseline_branch"
+  echo
+  echo "ralph: the 'git push --force-with-lease' step must be run by the human operator."
+}
+
 cmd_ls() {
   local arg="${1:-}"
   if [ "$BACKEND" = "github" ]; then
@@ -679,6 +857,10 @@ iterate_once() {
   if [ "${1:-}" = "-i" ]; then interactive=1; shift; fi
   local milestone="${1:-}"
   local prompt
+  # Issue picked this iteration, recorded in the baseline. Known up-front for
+  # the GitHub backend; empty for fs (Claude picks), where SHA+branch still
+  # give recovery its reset target.
+  local picked_issue=""
   if [ "$BACKEND" = "github" ]; then
     command -v gh >/dev/null 2>&1 || { echo "ralph: 'gh' CLI not found" >&2; return 1; }
     command -v jq >/dev/null 2>&1 || { echo "ralph: 'jq' not found" >&2; return 1; }
@@ -703,6 +885,7 @@ iterate_once() {
       echo "<promise>COMPLETE</promise>"
       return 20
     fi
+    picked_issue="$pick"
     prompt=$(build_prompt_gh "$milestone" "$pick")
   else
     if [ ! -s "$MARKER_FILE" ]; then
@@ -743,6 +926,9 @@ iterate_once() {
 
   local logs_dir=".ralph-logs/$scope"
   mkdir -p "$logs_dir" || { echo "ralph: failed to create logs directory" >&2; return 1; }
+
+  # Record the iteration baseline before invoking Claude (both backends).
+  record_baseline "$scope" "$picked_issue"
 
   # Create session marker (PID file) and set up cleanup trap
   local running_file="$logs_dir/running"
@@ -795,6 +981,11 @@ case "$1" in
   inspect)
     shift
     cmd_inspect "$@"
+    exit $?
+    ;;
+  recover)
+    shift
+    cmd_recover "${1:-}"
     exit $?
     ;;
   once)
