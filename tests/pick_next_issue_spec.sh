@@ -405,6 +405,76 @@ EOF
 
 test_inspect_list
 
+# --- Config generator tests (issue #19) ---
+test_config_generator() {
+  local test_dir
+  test_dir=$(mktemp -d)
+  cd "$test_dir" || exit 1
+
+  # Test 1: Generate mature-external (dragonruby) config
+  local config
+  config=$(BACKEND=github GH_REPO="" generate_port_config "build/dragonruby" "myrepo" "dragonruby" "mature-external" 2>&1)
+  if echo "$config" | grep -q "sbx run myrepo-dragonruby"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("config_gen: dragonruby CLAUDE_CMD")
+    echo "FAIL: config_gen: dragonruby CLAUDE_CMD"
+  fi
+
+  if echo "$config" | grep -q "DR_TEST_SOURCE=remote"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("config_gen: dragonruby TEST_CMD")
+    echo "FAIL: config_gen: dragonruby TEST_CMD"
+  fi
+
+  # Test 2: Generate standard (littlejs) config
+  config=$(BACKEND=github GH_REPO="" generate_port_config "build/littlejs" "myrepo" "littlejs" "standard" 2>&1)
+  if echo "$config" | grep -q "npx vitest run"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("config_gen: littlejs TEST_CMD")
+    echo "FAIL: config_gen: littlejs TEST_CMD"
+  fi
+
+  if echo "$config" | grep -q "npx eslint"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("config_gen: littlejs LINT_CMD")
+    echo "FAIL: config_gen: littlejs LINT_CMD"
+  fi
+
+  # Test 3: Generate host-fallback (pico8) config
+  config=$(BACKEND=github GH_REPO="" generate_port_config "build/pico8" "myrepo" "pico8" "host-fallback" 2>&1)
+  if echo "$config" | grep -q 'CLAUDE_CMD="claude"'; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("config_gen: pico8 host fallback")
+    echo "FAIL: config_gen: pico8 host fallback"
+  fi
+
+  # Test 4: Config includes milestone convention comment
+  config=$(BACKEND=github GH_REPO="" generate_port_config "build/test" "myrepo" "test" "host-fallback" 2>&1)
+  if echo "$config" | grep -q "<console>-<feature>"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("config_gen: milestone convention comment")
+    echo "FAIL: config_gen: milestone convention comment"
+  fi
+
+  # Cleanup
+  cd / || true
+  rm -rf "$test_dir"
+}
+
+test_config_generator
+
 # --- Engine detector tests (issue #18) ---
 test_engine_detector() {
   local test_dir
