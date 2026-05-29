@@ -107,6 +107,33 @@ A single skill invocation scaffolds every detected port:
 Idempotent: a port that already has a `.ralph.conf` is reported as
 configured and **skipped** unless the user chooses to update it.
 
+### Orchestrator (main flow)
+
+The single top-level procedure for a monorepo. Run top-to-bottom in **one**
+skill invocation; each step links to its detailed subsection below.
+
+1. **Scan** — run [Engine detection](#engine-detection). Yields the ordered,
+   deduped `(port-dir, console, tier)` list.
+2. **Confirm** — print the detected set and ask to proceed. The user may drop or
+   correct entries; abort writes nothing.
+3. **Loop ports** — for each `(port, console, tier)` **in order**:
+   - **Idempotency:** if `<port>/.ralph.conf` already exists, report it
+     *configured* and ask "update? (default **skip**)". Skip unless the user
+     opts in.
+   - Otherwise **dispatch by tier** to the matching recipe and record the
+     outcome (scaffolded / skipped / failed):
+
+     | Tier | Recipe |
+     |---|---|
+     | host-fallback (pico8, picotron) | [Per-port config → host-fallback](#per-port-config-all-tiers) |
+     | standard (littlejs)             | [Per-port config → standard](#per-port-config-all-tiers) |
+     | mature-external (dragonruby)    | [dragonruby guided import](#mature-external-recipe-dragonruby-guided-import) |
+4. **Root config** — offer the
+   [root engine-agnostic config](#root-engine-agnostic-config) **last**, for
+   cross-cutting work.
+5. **Summary** — print the per-port [Summary](#summary): what was scaffolded,
+   what was skipped (already configured), and what remains TODO.
+
 ### Engine detection
 
 Scan `build/*/` first; **fall back** to a general marker-scan at
@@ -310,20 +337,15 @@ Docker recipes, etc.).
 
 ---
 
-## TODO — remaining work (tracked as ready-for-human issues)
+## Known limitations
 
-These steps need an interactive session (external repo access, a
-licensed binary, npm/sbx, file-by-file confirmation) and are **not yet
-fully implemented** in this skill. See the linked issues for full
-implementation notes:
-
-- **#25 — orchestrator:** wire scan → confirm → loop → root → summary
-  into the single top-level flow, with idempotent skip.
-
-Done and authored above: **#21** (littlejs standard recipe — see
-*standard* under the monorepo flow), **#22** (bundled
-`recipes/dragonruby/`), and **#24** (dragonruby guided import — see
-*mature-external recipe* under the monorepo flow).
+- **host-fallback tiers (pico8, picotron) have no sandbox recipe.** Their
+  `.sbx/build.sh` is a stub and `TEST_CMD`/`LINT_CMD` are no-ops; `CLAUDE_CMD`
+  runs on the host. A real code-judo Docker recipe (cf. dragonruby
+  ADR-0016/ADR-0022) is not yet implemented.
+- The monorepo flow assumes an interactive session — external repo access
+  (locomotion), a licensed linux-arm64 binary, and npm/sbx availability. It is
+  authored but not yet validated end-to-end against a live monorepo.
 
 ---
 
