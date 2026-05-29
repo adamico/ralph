@@ -448,6 +448,80 @@ test_inspect_list_empty() {
 
 test_inspect_list_empty
 
+# --- Preflight guard: main branch tests (issue #38) ---
+test_main_branch_guard() {
+  local test_dir
+  test_dir=$(mktemp -d)
+  cd "$test_dir" || exit 1
+
+  # Initialize a git repo with main and feature branches
+  git init >/dev/null 2>&1
+  git config user.email "test@example.com" >/dev/null 2>&1
+  git config user.name "Test User" >/dev/null 2>&1
+
+  # Create initial commit on main
+  touch .gitkeep
+  git add .gitkeep >/dev/null 2>&1
+  git commit -m "initial" >/dev/null 2>&1
+
+  # Source ralph to test check_main_branch_guard
+  # shellcheck disable=SC1090
+  . "$RALPH"
+
+  # Test 1: on main branch, guard should block (return 1)
+  local output rc
+  output=$(check_main_branch_guard 2>&1); rc=$?
+  if [ $rc -eq 1 ] && echo "$output" | grep -q "refusing to run on"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("main_branch_guard: on main should block")
+    echo "FAIL: main_branch_guard: on main should block (rc=$rc)"
+    echo "$output"
+  fi
+
+  # Test 2: create feature branch and test proceed
+  git checkout -b feature/test >/dev/null 2>&1
+  output=$(check_main_branch_guard 2>&1); rc=$?
+  if [ $rc -eq 0 ]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("main_branch_guard: on feature branch should proceed")
+    echo "FAIL: main_branch_guard: on feature branch should proceed"
+    echo "$output"
+  fi
+
+  # Test 3: switch back to the default branch and test override via RALPH_ALLOW_MAIN
+  git checkout main >/dev/null 2>&1 || git checkout master >/dev/null 2>&1
+  output=$(RALPH_ALLOW_MAIN=1 check_main_branch_guard 2>&1); rc=$?
+  if [ $rc -eq 0 ]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("main_branch_guard: RALPH_ALLOW_MAIN override should proceed")
+    echo "FAIL: main_branch_guard: RALPH_ALLOW_MAIN override should proceed"
+    echo "$output"
+  fi
+
+  # Test 4: verify message mentions engagement branch pattern (on default branch, unblocked)
+  output=$(check_main_branch_guard 2>&1)
+  if echo "$output" | grep -q "ralph/"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("main_branch_guard: message should mention ralph/ pattern")
+    echo "FAIL: main_branch_guard: message should mention ralph/ pattern"
+    echo "$output"
+  fi
+
+  # Cleanup
+  cd / || true
+  rm -rf "$test_dir"
+}
+
+test_main_branch_guard
+
 # --- summary ---
 echo
 echo "ran $((PASS+FAIL)) assertions: $PASS pass, $FAIL fail"
