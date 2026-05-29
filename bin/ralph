@@ -415,72 +415,7 @@ prompt_engine_confirmation() {
   echo "Detected engine ports:"
   printf '%s\n' "${engines_ref[@]}" | nl
   read -p "Proceed with scaffolding these ports? (y/n) " -r choice
-  case "$choice" in
-    [Yy]*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-generate_port_config() {
-  # Generate a standalone .ralph.conf for a given port.
-  # Args: port_dir, repo_name, console, tier
-  # Outputs the config content to stdout.
-  local port_dir="$1" repo_name="$2" console="$3" tier="$4"
-
-  cat <<EOF
-# Per-port standalone config for $repo_name/$console.
-# No inheritance from parent — each port config is self-contained.
-# Milestone naming convention: <console>-<feature> (e.g. $console-my-feature).
-# Milestone is a runtime arg to 'ralph once', not stored in config.
-
-BACKEND="github"
-MODEL="haiku"
-EOF
-
-  case "$tier" in
-    mature-external)
-      cat <<EOF
-CLAUDE_CMD="sbx run $repo_name-$console --"
-TEST_CMD="DR_TEST_SOURCE=remote ./run_tests"
-LINT_CMD="bundle exec rubocop"
-EOF
-      ;;
-    standard)
-      cat <<EOF
-CLAUDE_CMD="sbx run $repo_name-$console --"
-TEST_CMD="npx vitest run"
-LINT_CMD="npx eslint ."
-EOF
-      ;;
-    host-fallback)
-      cat <<EOF
-CLAUDE_CMD="claude"
-TEST_CMD=":"
-LINT_CMD="echo TODO: sandbox build.sh needed"
-EOF
-      ;;
-  esac
-}
-
-write_port_config() {
-  # Write or prompt to update a port config file.
-  # Args: port_dir, repo_name, console, tier
-  # Returns 0 if written, 1 if skipped.
-  local port_dir="$1" repo_name="$2" console="$3" tier="$4"
-  local config_file="$port_dir/.ralph.conf"
-
-  if [ -f "$config_file" ]; then
-    echo "Config exists at $config_file. Overwrite? (y/n)"
-    read -p "" -r choice
-    case "$choice" in
-      [Yy]*) ;;
-      *) return 1 ;;
-    esac
-  fi
-
-  generate_port_config "$port_dir" "$repo_name" "$console" "$tier" > "$config_file"
-  echo "Created $config_file"
-  return 0
+  [[ "$choice" =~ ^[Yy]$ ]]
 }
 
 cmd_inspect_list() {
