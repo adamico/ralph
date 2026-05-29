@@ -1,20 +1,22 @@
 # LittleJS Recipe
 
-Bundled recipe for the ralph-init skill: sandbox template build for LittleJS ports.
+Bundled recipe for the ralph-init skill: sandbox + dual-mode test harness for
+LittleJS (node/vitest) ports. Standard-tier sibling of the *mature-external*
+dragonruby recipe (imported from `adamico/locomotion`). First built in
+`adamico/obsi` at `build/littlejs/`.
 
 ## Contents
 
-- `build.sh` — Build the `<repo>-littlejs` sandbox template
-- `Dockerfile` — Base image for the Node.js sandbox
+- `build.sh` — Create the `<repo>-littlejs` sbx sandbox (bare `node:20`, mounts the git root)
+- `run_tests` — Dual-mode test/lint harness (`local` host in-place / `remote` fresh clone)
 - `README.md` — This file
 
 ## Quick Start
 
-For a new LittleJS port (or any Node.js/Vitest project):
-
-1. Ensure `package.json` exists with `littlejsengine` or equivalent
-2. Ensure vitest and eslint are listed in `package.json` (or run the install step)
-3. Run `./build.sh` from the port root to create the `<repo>-littlejs` sandbox
+1. Ensure `package.json` exists with vitest + eslint as devDeps and
+   `test`/`lint` scripts.
+2. Run `./build.sh` to create the `<repo>-littlejs` sandbox.
+3. The skill generates a `.ralph.conf` (below).
 
 ## Configuration
 
@@ -22,19 +24,39 @@ The skill generates a `.ralph.conf` for the port with:
 
 ```bash
 CLAUDE_CMD="sbx run <repo>-littlejs --"
-TEST_CMD="npx vitest run"
-LINT_CMD="npx eslint ."
+TEST_CMD="<ENGINE>_TEST_SOURCE=remote <abs-path>/run_tests test"
+LINT_CMD="<ENGINE>_TEST_SOURCE=remote <abs-path>/run_tests lint"
 ```
+
+`<ENGINE>` is the port prefix (e.g. `LITTLEJS_` / `OBSI_`). `TEST_CMD`/`LINT_CMD`
+are **prompt text** ralph interpolates into the agent's prompt — ralph never
+executes them; the agent does. Use an absolute path because the agent's cwd in
+the sandbox is not the mount.
+
+## Test model (B) — push before green
+
+`run_tests` is dual-mode via `<ENGINE>_TEST_SOURCE`:
+
+- `local` — runs vitest/eslint on the host workspace in place; picks up
+  uncommitted WIP. Fast human iteration.
+- `remote` (default) — fresh `git clone` of the GitHub origin into `/tmp` inside
+  the sandbox, then `npm ci` there. Builds clean linux deps and never shares the
+  bind-mounted darwin `node_modules` into the linux container.
+
+**Remote mode tests `origin/<branch>`, so the agent must commit AND push before
+tests reflect its changes** (ADR-0022, locomotion: "WIP must be pushed to be
+testable"). The generated `.ralph.conf` header states this contract so the
+haiku agent reads it.
 
 ## Assumptions
 
-- `package.json` exists in port root
-- Node.js 20+ environment is suitable
-- `sbx` CLI is installed and configured
-- `docker` daemon is running
+- `package.json` with vitest + eslint and `test`/`lint` scripts
+- `sbx` CLI installed and configured; `docker` daemon running
+- Node.js 20 sandbox is suitable
 
 ## References
 
 - LittleJS: https://github.com/KilledByAPixel/LittleJS
 - Vitest: https://vitest.dev
 - ESLint: https://eslint.org
+- dragonruby sibling + ADR-0022: `adamico/locomotion`

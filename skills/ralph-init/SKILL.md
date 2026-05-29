@@ -214,24 +214,43 @@ exit 0
    ```
    Ask user: "Install Vitest + ESLint now? (recommended)" before running.
 
-2. **Copy bundled template** to the port (rewriting SANDBOX_NAME and TEMPLATE_TAG):
+2. **Copy bundled template** to the port (no Dockerfile — the sandbox is a bare
+   `node:20`):
 
    | Source (bundled)        | Destination                 |
    |---|---|
    | `recipes/littlejs/build.sh` | `<port>/.sbx/build.sh` |
-   | `recipes/littlejs/Dockerfile` | `<port>/.sbx/Dockerfile` |
+   | `recipes/littlejs/run_tests` | `<port>/run_tests` |
 
-3. **Verify** — `shellcheck <port>/.sbx/build.sh` must pass clean.
-
-4. **Emit config** — `<port>/.ralph.conf`:
+   Then rewrite the `LITTLEJS_` env prefix in `run_tests` to the port's
+   `<ENGINE>_` prefix (e.g. `OBSI_`) — **all five vars at once**, or a stale
+   prefix silently ignores the conf var and falls back to defaults:
 
    ```bash
-   CLAUDE_CMD="sbx run <repo>-littlejs --"
-   TEST_CMD="npx vitest run"
-   LINT_CMD="npx eslint ."
+   sed -i '' 's/LITTLEJS_/<ENGINE>_/g' <port>/run_tests   # macOS; GNU sed: sed -i
    ```
 
-5. **Optional: Build sandbox template now?** — Ask user whether to run `.sbx/build.sh` immediately (`SANDBOX_NAME=<repo>-littlejs TEMPLATE_TAG=<repo>-littlejs bash .sbx/build.sh`) or defer to first ralph run. Building now validates the setup; deferring allows ralph to batch multiple ports. If building, report success/failure.
+3. **Verify** — `shellcheck <port>/.sbx/build.sh <port>/run_tests` must pass clean.
+
+4. **Emit config** — `<port>/.ralph.conf`. Test model (B): `run_tests` remote mode
+   clones `origin/<branch>`, so the agent must **commit AND push before tests see
+   its work**. State that in the conf header (`TEST_CMD` is prompt-text-only — it
+   rides into the agent's prompt as text):
+
+   ```bash
+   # Tests run via run_tests remote mode: fresh clone of origin/<branch> in the
+   # sandbox + clean linux `npm ci`. COMMIT AND PUSH before tests reflect changes
+   # (ADR-0022: "WIP must be pushed to be testable"). Absolute path: agent cwd in
+   # the sandbox is not the mount.
+   CLAUDE_CMD="sbx run <repo>-littlejs --"
+   TEST_CMD="<ENGINE>_TEST_SOURCE=remote <abs-path>/run_tests test"
+   LINT_CMD="<ENGINE>_TEST_SOURCE=remote <abs-path>/run_tests lint"
+   ```
+
+5. **Optional: Build sandbox now?** — Ask user whether to run `.sbx/build.sh`
+   immediately (`SANDBOX_NAME=<repo>-littlejs bash .sbx/build.sh`) or defer to
+   first ralph run. Building now validates the setup; deferring lets ralph batch
+   multiple ports. If building, report success/failure.
 
 **mature-external (dragonruby):** — see the dragonruby guided import below.
 
