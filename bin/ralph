@@ -453,6 +453,8 @@ EOF
       ;;
     host-fallback)
       cat <<EOF
+# Host fallback: no sandbox yet. CLAUDE_CMD runs on host; TEST_CMD is a stub.
+# TODO: Implement code-judo Docker recipe (see dragonruby ADR-0016/ADR-0022).
 CLAUDE_CMD="claude"
 TEST_CMD=":"
 LINT_CMD="echo TODO: sandbox build.sh needed"
@@ -479,6 +481,33 @@ write_port_config() {
 
   generate_port_config "$port_dir" "$repo_name" "$console" "$tier" > "$config_file"
   echo "Created $config_file"
+  return 0
+}
+
+write_stub_build_script() {
+  # Write a stub .sbx/build.sh for host-fallback consoles (pico8, picotron).
+  # Args: port_dir, console
+  local port_dir="$1" console="$2"
+  local sbx_dir="$port_dir/.sbx"
+  local build_file="$sbx_dir/build.sh"
+
+  mkdir -p "$sbx_dir"
+
+  cat > "$build_file" << 'EOF'
+#!/bin/bash
+# TODO: Implement code-judo Docker recipe for pico8/picotron.
+# This is a stub placeholder; the full sandbox build recipe is not yet implemented.
+# See the dragonruby implementation (ADR-0016, ADR-0022) for reference.
+
+set -uo pipefail
+
+# Placeholder: exit successfully without building anything
+echo "TODO: Sandbox build recipe not yet implemented for this console" >&2
+exit 0
+EOF
+
+  chmod +x "$build_file"
+  echo "Created stub $build_file"
   return 0
 }
 
