@@ -405,6 +405,49 @@ EOF
 
 test_inspect_list
 
+# --- inspect_list empty/missing scope (set -u guard regression) ---
+test_inspect_list_empty() {
+  local test_dir
+  test_dir=$(mktemp -d)
+  cd "$test_dir" || exit 1
+
+  # shellcheck disable=SC1090
+  . "$RALPH"
+
+  # Existing but empty scope dir: must not trip `set -u` on ${files[@]}
+  mkdir -p .ralph-logs/empty-scope
+  local output rc
+  output=$(BACKEND=github GH_REPO="" cmd_inspect_list "empty-scope" 2>&1); rc=$?
+  assert_eq "inspect_list: empty scope exits 0" "0" "$rc"
+  if echo "$output" | grep -q "unbound variable"; then
+    FAIL=$((FAIL+1)); FAILED_NAMES+=("inspect_list: empty scope unbound variable")
+    echo "FAIL: inspect_list: empty scope unbound variable"; echo "$output"
+  else
+    PASS=$((PASS+1))
+  fi
+  if echo "$output" | grep -q "no iterations logged"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1)); FAILED_NAMES+=("inspect_list: empty scope message")
+    echo "FAIL: inspect_list: empty scope message"; echo "$output"
+  fi
+
+  # Missing scope dir: graceful message, exit 0
+  output=$(BACKEND=github GH_REPO="" cmd_inspect_list "no-such-scope" 2>&1); rc=$?
+  assert_eq "inspect_list: missing scope exits 0" "0" "$rc"
+  if echo "$output" | grep -q "no logs found"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1)); FAILED_NAMES+=("inspect_list: missing scope message")
+    echo "FAIL: inspect_list: missing scope message"; echo "$output"
+  fi
+
+  cd / || true
+  rm -rf "$test_dir"
+}
+
+test_inspect_list_empty
+
 # --- Config generator tests (issue #19) ---
 test_config_generator() {
   local test_dir
