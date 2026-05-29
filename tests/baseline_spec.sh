@@ -167,10 +167,42 @@ test_baseline_overwrite() {
   rm -rf "$test_dir"
 }
 
+# --- regression: record_baseline must create the scope dir itself ---
+# (record_baseline runs before iterate_once's mkdir; on the first iteration
+# of a fresh scope the dir is otherwise absent and the write fails silently.)
+test_baseline_creates_missing_dir() {
+  local test_dir
+  test_dir=$(mktemp -d)
+  local orig_pwd="$PWD"
+  cd "$test_dir" || exit 1
+
+  git init -q
+  git config user.email "test@example.com"
+  git config user.name "Test User"
+  touch f.txt; git add f.txt; git commit -q -m "init"
+
+  local scope="fresh-scope"
+  # Deliberately do NOT create .ralph-logs/$scope first.
+  record_baseline "$scope" "issue-9"
+
+  if [ -f ".ralph-logs/$scope/baseline" ] && read_baseline "$scope" \
+     && [ "$BASELINE_ISSUE" = "issue-9" ]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("baseline: record_baseline creates missing scope dir")
+    echo "FAIL: baseline: record_baseline creates missing scope dir"
+  fi
+
+  cd "$orig_pwd" || exit 1
+  rm -rf "$test_dir"
+}
+
 # --- run tests ---
 test_baseline_roundtrip
 test_baseline_missing_file
 test_baseline_overwrite
+test_baseline_creates_missing_dir
 
 # --- summary ---
 echo

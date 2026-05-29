@@ -251,6 +251,11 @@ record_baseline() {
   local logs_dir=".ralph-logs/$scope"
   local baseline_file="$logs_dir/baseline"
 
+  # Ensure the scope dir exists — record_baseline runs before the
+  # non-interactive path's mkdir, so on the first iteration of a fresh
+  # scope the dir is otherwise absent and the write would fail silently.
+  mkdir -p "$logs_dir" || { echo "ralph: failed to create logs directory" >&2; return 1; }
+
   local sha branch ts
   sha=$(git rev-parse HEAD)
   branch=$(git branch --show-current)
@@ -275,14 +280,14 @@ read_baseline() {
     return 1
   fi
 
-  # Source the baseline file to set variables
-  # shellcheck disable=SC1090
-  . "$baseline_file"
-
-  BASELINE_SHA="$sha"
-  BASELINE_ISSUE="$issue"
-  BASELINE_BRANCH="$branch"
-  BASELINE_TIMESTAMP="$timestamp"
+  # Parse key=value lines (do NOT source — the file holds untrusted
+  # branch/issue strings that must not be evaluated as shell).
+  _bl_val() { grep -m1 "^$1=" "$baseline_file" | cut -d= -f2-; }
+  BASELINE_SHA=$(_bl_val sha)
+  BASELINE_ISSUE=$(_bl_val issue)
+  BASELINE_BRANCH=$(_bl_val branch)
+  BASELINE_TIMESTAMP=$(_bl_val timestamp)
+  unset -f _bl_val
 
   return 0
 }
@@ -366,8 +371,9 @@ cmd_status() {
       if [ -f "$running_file" ] && [ -f "$baseline_file" ]; then
         local pid
         pid=$(cat "$running_file" 2>/dev/null)
-        # Check if PID is alive: kill -0 returns 0 if process exists, 1 if not
-        if ! kill -0 "$pid" 2>/dev/null; then
+        # A non-numeric/empty PID is a corrupt marker — treat as dead.
+        # Otherwise kill -0 returns 0 if the process exists, 1 if not.
+        if ! [[ "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" 2>/dev/null; then
           # PID is dead; read baseline
           if read_baseline "$scope"; then
             if [ "$any_interrupted" = 0 ]; then
@@ -800,8 +806,11 @@ cmd_recover() {
   local baseline_issue="$BASELINE_ISSUE"
   local baseline_branch="$BASELINE_BRANCH"
 
-  # Confirm the issue is still open/ready
-  if [ "$BACKEND" = "github" ]; then
+  # Confirm the issue is still open/ready. Skip when the issue is unknown
+  # (fs backend records an empty issue — Claude picks at iteration time).
+  if [ -z "$baseline_issue" ]; then
+    : # nothing to confirm
+  elif [ "$BACKEND" = "github" ]; then
     local repo_flag=""
     [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
     local issue_state
@@ -817,8 +826,10 @@ cmd_recover() {
     else
       local status
       status=$(grep -m1 '^Status:' "$issue_file" | awk '{print $2}')
-      if [ "$status" != "ready" ] && [ "$status" != "done" ]; then
-        echo "ralph: warning: issue $baseline_issue has status '$status' (expected ready/done)" >&2
+      # Redo-from-scratch expects a still-pending issue. 'done' means the
+      # work completed — recovering it would redo finished work.
+      if [ "$status" != "ready" ]; then
+        echo "ralph: warning: issue $baseline_issue has status '$status' (expected ready)" >&2
       fi
     fi
   fi
@@ -846,6 +857,10 @@ iterate_once() {
   if [ "${1:-}" = "-i" ]; then interactive=1; shift; fi
   local milestone="${1:-}"
   local prompt
+  # Issue picked this iteration, recorded in the baseline. Known up-front for
+  # the GitHub backend; empty for fs (Claude picks), where SHA+branch still
+  # give recovery its reset target.
+  local picked_issue=""
   if [ "$BACKEND" = "github" ]; then
     command -v gh >/dev/null 2>&1 || { echo "ralph: 'gh' CLI not found" >&2; return 1; }
     command -v jq >/dev/null 2>&1 || { echo "ralph: 'jq' not found" >&2; return 1; }
@@ -870,8 +885,7 @@ iterate_once() {
       echo "<promise>COMPLETE</promise>"
       return 20
     fi
-    # Record baseline before Claude invocation
-    record_baseline "$milestone" "$pick"
+    picked_issue="$pick"
     prompt=$(build_prompt_gh "$milestone" "$pick")
   else
     if [ ! -s "$MARKER_FILE" ]; then
@@ -912,6 +926,9 @@ iterate_once() {
 
   local logs_dir=".ralph-logs/$scope"
   mkdir -p "$logs_dir" || { echo "ralph: failed to create logs directory" >&2; return 1; }
+
+  # Record the iteration baseline before invoking Claude (both backends).
+  record_baseline "$scope" "$picked_issue"
 
   # Create session marker (PID file) and set up cleanup trap
   local running_file="$logs_dir/running"
