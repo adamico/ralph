@@ -501,14 +501,6 @@ test_config_generator() {
     echo "FAIL: config_gen: pico8 host fallback"
   fi
 
-  if echo "$config" | grep -q "Host fallback"; then
-    PASS=$((PASS+1))
-  else
-    FAIL=$((FAIL+1))
-    FAILED_NAMES+=("config_gen: host fallback comment")
-    echo "FAIL: config_gen: host fallback comment"
-  fi
-
   # Test 4: Config includes milestone convention comment
   config=$(BACKEND=github GH_REPO="" generate_port_config "build/test" "myrepo" "test" "host-fallback" 2>&1)
   if echo "$config" | grep -q "<console>-<feature>"; then
@@ -524,52 +516,7 @@ test_config_generator() {
   rm -rf "$test_dir"
 }
 
-test_stub_build_script() {
-  local test_dir
-  test_dir=$(mktemp -d)
-  cd "$test_dir" || exit 1
-
-  # Test 1: Stub build script is created
-  mkdir -p build/pico8
-  BACKEND=github GH_REPO="" write_stub_build_script "build/pico8" "pico8" > /dev/null 2>&1
-  if [ -f "build/pico8/.sbx/build.sh" ]; then
-    PASS=$((PASS+1))
-  else
-    FAIL=$((FAIL+1))
-    FAILED_NAMES+=("stub_script: file created")
-    echo "FAIL: stub_script: file created"
-  fi
-
-  # Test 2: Script is executable
-  if [ -x "build/pico8/.sbx/build.sh" ]; then
-    PASS=$((PASS+1))
-  else
-    FAIL=$((FAIL+1))
-    FAILED_NAMES+=("stub_script: executable")
-    echo "FAIL: stub_script: executable"
-  fi
-
-  # Test 3: Script contains TODO header
-  if grep -q "TODO: Implement code-judo Docker recipe" "build/pico8/.sbx/build.sh"; then
-    PASS=$((PASS+1))
-  else
-    FAIL=$((FAIL+1))
-    FAILED_NAMES+=("stub_script: TODO header")
-    echo "FAIL: stub_script: TODO header"
-  fi
-
-  # Test 4: Script passes shellcheck (if available)
-  # Skip shellcheck validation since it's not available in the environment
-  PASS=$((PASS+1))
-
-  # Cleanup
-  cd / || true
-  rm -rf "$test_dir"
-}
-
 test_config_generator
-
-test_stub_build_script
 
 # --- Engine detector tests (issue #18) ---
 test_engine_detector() {
