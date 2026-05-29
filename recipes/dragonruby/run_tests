@@ -1,0 +1,59 @@
+#!/bin/sh
+set -eu
+
+# ADR-0022: two run modes.
+#   DR_TEST_SOURCE=local  (default) — host macOS engine in-place, no clone.
+#   DR_TEST_SOURCE=remote          — sandbox/CI: fresh clone + linux-arm64 engine.
+
+DR_TEST_SOURCE="${DR_TEST_SOURCE:-local}"
+HOST_REPO="$(cd "$(dirname "$0")" && pwd)"
+export SDL_VIDEODRIVER=dummy
+
+if [ "$DR_TEST_SOURCE" = "local" ]; then
+  ENGINE_DIR="$HOST_REPO/dragonruby-macos"
+  if [ ! -x "$ENGINE_DIR/dragonruby" ]; then
+    echo "Error: $ENGINE_DIR/dragonruby not found" >&2
+    exit 1
+  fi
+  cd "$ENGINE_DIR"
+  if command -v gtimeout >/dev/null 2>&1; then
+    exec gtimeout 300 ./dragonruby mygame --eval app/tests.rb --exit-on-fail
+  else
+    exec ./dragonruby mygame --eval app/tests.rb --exit-on-fail
+  fi
+fi
+
+# remote: sandbox path
+DR_OS="linux-arm64"
+DR_TEST_REF="${DR_TEST_REF:-}"
+SANDBOX_CLONE="/tmp/loco-test"
+
+if ! command -v dr-update >/dev/null 2>&1; then
+  echo "Error: dr-update not in PATH" >&2
+  echo "Required for engine provisioning. Install via:" >&2
+  echo "  sudo cp ~/.local/bin/dr-update /usr/local/bin/" >&2
+  exit 1
+fi
+
+if [ ! -d "$SANDBOX_CLONE" ]; then
+  echo "Cloning from github.com/adamico/locomotion..."
+  git clone https://github.com/adamico/locomotion "$SANDBOX_CLONE"
+else
+  echo "Refreshing clone at $SANDBOX_CLONE..."
+  git -C "$SANDBOX_CLONE" fetch origin
+  TARGET_REF="${DR_TEST_REF:-}"
+  if [ -z "$TARGET_REF" ]; then
+    TARGET_REF="$(git -C "$HOST_REPO" branch --show-current)"
+    if [ -z "$TARGET_REF" ]; then
+      TARGET_REF="main"
+    fi
+  fi
+  git -C "$SANDBOX_CLONE" reset --hard "origin/$TARGET_REF"
+fi
+
+cd "$SANDBOX_CLONE"
+echo "Provisioning dragonruby-${DR_OS}..."
+dr-update . --os "$DR_OS" --mygame copy
+
+cd "dragonruby-${DR_OS}"
+exec timeout 300 ./dragonruby mygame --eval app/tests.rb --exit-on-fail
