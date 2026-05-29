@@ -215,13 +215,20 @@ exit 0
    Ask user: "Install Vitest + ESLint now? (recommended)" before running.
 
 2. **Copy bundled template** to the port (no Dockerfile — the sandbox is a bare
-   `node:20`; rewrite the `LITTLEJS_` env prefix in `run_tests` to the port's
-   `<ENGINE>_` prefix, e.g. `OBSI_`):
+   `node:20`):
 
    | Source (bundled)        | Destination                 |
    |---|---|
    | `recipes/littlejs/build.sh` | `<port>/.sbx/build.sh` |
    | `recipes/littlejs/run_tests` | `<port>/run_tests` |
+
+   Then rewrite the `LITTLEJS_` env prefix in `run_tests` to the port's
+   `<ENGINE>_` prefix (e.g. `OBSI_`) — **all five vars at once**, or a stale
+   prefix silently ignores the conf var and falls back to defaults:
+
+   ```bash
+   sed -i '' 's/LITTLEJS_/<ENGINE>_/g' <port>/run_tests   # macOS; GNU sed: sed -i
+   ```
 
 3. **Verify** — `shellcheck <port>/.sbx/build.sh <port>/run_tests` must pass clean.
 

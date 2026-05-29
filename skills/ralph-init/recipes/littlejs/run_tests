@@ -4,10 +4,10 @@ set -eu
 # Dual-mode test harness for a LittleJS (node/vitest) ralph port.
 # Standard-tier sibling of the dragonruby ADR-0022 harness (adamico/locomotion).
 #
-#   <ENGINE>_TEST_SOURCE=local  (default below: remote) — run vitest/eslint on
-#                                 the host workspace in place. Picks up
-#                                 uncommitted WIP; fast human iteration.
-#   <ENGINE>_TEST_SOURCE=remote (default) — fresh `git clone` of the GitHub
+#   <ENGINE>_TEST_SOURCE=local  — run vitest/eslint on the host workspace in
+#                                 place. Picks up uncommitted WIP; fast human
+#                                 iteration.
+#   <ENGINE>_TEST_SOURCE=remote — (default) fresh `git clone` of the GitHub
 #                                 origin into /tmp INSIDE the sandbox, then
 #                                 `npm ci` there. Keeps clean linux deps and
 #                                 never shares the bind-mounted host (darwin)
@@ -30,6 +30,11 @@ TIMEOUT_SECS="${LITTLEJS_TIMEOUT_SECS:-300}"
 case "$MODE" in
   test|lint) ;;
   *) echo "Usage: $0 test|lint" >&2; exit 2 ;;
+esac
+
+case "$SRC" in
+  local|remote) ;;
+  *) echo "Bad TEST_SOURCE '$SRC' (expected local|remote)" >&2; exit 2 ;;
 esac
 
 # Wrap in a timeout when one is available (coreutils `timeout` in the linux
