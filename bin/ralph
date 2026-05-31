@@ -842,6 +842,47 @@ cmd_recover() {
   echo "ralph: the 'git push --force-with-lease' step must be run by the human operator."
 }
 
+check_main_branch_guard() {
+  # Preflight guard: refuse to run when on main/master (or detected default branch)
+  # unless overridden via RALPH_ALLOW_MAIN=1. Returns 0 if guard passes, 1 if blocked.
+  if [ "${RALPH_ALLOW_MAIN:-0}" = "1" ]; then
+    return 0
+  fi
+
+  local current_branch
+  current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || {
+    echo "ralph: failed to detect current branch" >&2
+    return 1
+  }
+
+  # Detect default branch: try GitHub API first (if github backend), then fall back to local git
+  local default_branch=""
+  if [ "$BACKEND" = "github" ]; then
+    local repo_flag=""
+    [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
+    default_branch=$(gh api $repo_flag repos/:owner/:repo --jq '.default_branch' 2>/dev/null)
+  fi
+
+  # Fall back to local git repo detection if GitHub API didn't work or wasn't used
+  if [ -z "$default_branch" ]; then
+    if git rev-parse --verify main >/dev/null 2>&1; then
+      default_branch="main"
+    elif git rev-parse --verify master >/dev/null 2>&1; then
+      default_branch="master"
+    else
+      default_branch="main"
+    fi
+  fi
+
+  if [ "$current_branch" = "$default_branch" ]; then
+    echo "ralph: refusing to run on '$default_branch' — create/checkout an engagement branch first" >&2
+    echo "  Example: git checkout -b ralph/my-engagement" >&2
+    return 1
+  fi
+
+  return 0
+}
+
 cmd_ls() {
   local arg="${1:-}"
   if [ "$BACKEND" = "github" ]; then
@@ -853,6 +894,9 @@ cmd_ls() {
 
 # --- subcommands ------------------------------------------------------
 iterate_once() {
+  # Preflight guard: refuse to run on main/default branch
+  check_main_branch_guard || return 11
+
   local interactive=0
   if [ "${1:-}" = "-i" ]; then interactive=1; shift; fi
   local milestone="${1:-}"
@@ -1006,6 +1050,7 @@ case "$1" in
         20) exit 0 ;;                     # COMPLETE
         21) exit 2 ;;                     # BLOCKED
         10) exit 0 ;;                     # no marker
+        11) exit 1 ;;                     # main branch guard
         *)  exit $rc ;;                   # other failure
       esac
     done
