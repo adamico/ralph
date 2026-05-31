@@ -7,8 +7,11 @@ DEST="$PREFIX/bin"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 mkdir -p "$DEST"
-install -m 0755 "$SRC_DIR/bin/ralph" "$DEST/ralph"
-echo "installed: $DEST/ralph"
+# Symlink (not copy) so repo updates take effect without reinstalling.
+# Replace a real file left by a prior copy-based install first.
+[ -e "$DEST/ralph" ] && [ ! -L "$DEST/ralph" ] && rm -f "$DEST/ralph"
+ln -sfn "$SRC_DIR/bin/ralph" "$DEST/ralph"
+echo "linked: $DEST/ralph -> $SRC_DIR/bin/ralph"
 
 # Symlink tool-coupled skills into Claude Code (ADR-0003), only if present.
 SKILLS_DIR="$HOME/.claude/skills"
