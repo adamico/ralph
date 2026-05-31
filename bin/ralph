@@ -1034,11 +1034,28 @@ iterate_once() {
   iter_num=$(ls "$logs_dir"/iter-* 2>/dev/null | wc -l | awk '{print $1+1}')
   log_file="$logs_dir/iter-${iter_num}-${ts}.jsonl"
 
+  # Manifest: announce what this iteration is about to do before claude streams.
+  printf '\n── ralph iteration %s ─────────────────────────────\n' "$iter_num"
+  printf '  scope:  %s\n' "$scope"
+  printf '  issue:  %s\n' "${picked_issue:-(claude picks)}"
+  printf '  model:  %s\n' "$MODEL"
+  printf '  branch: %s\n' "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo n/a)"
+  printf '  log:    %s\n' "$log_file"
+  printf '────────────────────────────────────────────────────\n\n'
+
   # Stream live text output to terminal while writing raw JSONL to file
   $CLAUDE_CMD --output-format stream-json --verbose --effort low --model "$MODEL" --dangerously-skip-permissions -p "$prompt" 2>&1 \
     | grep --line-buffered '^{' \
     | tee "$log_file" \
-    | jq -r 'select(.type == "assistant").message.content[]? | select(.type == "text").text // empty | gsub("\n"; "\r\n") | . + "\r\n\n"'
+    | jq -r '
+        if .type == "assistant" then
+          .message.content[]? | (
+            if .type == "text" then .text
+            elif .type == "tool_use" then "→ " + .name + " " + (((.input // {}) | tostring)[0:140])
+            else empty end)
+        elif .type == "result" then "● " + (.subtype // "result")
+        else empty end
+        | select(. != "") | gsub("\n"; "\r\n") | . + "\r\n\n"'
   rc=${PIPESTATUS[0]}
   if [ $rc -ne 0 ]; then
     echo "ralph: claude invocation failed (rc=$rc)" >&2
