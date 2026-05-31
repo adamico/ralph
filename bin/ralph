@@ -99,14 +99,17 @@ infer_milestone_gh() {
   else
     # Multiple milestones — check if stdin is a TTY
     if [ -t 0 ]; then
-      # Interactive picker
+      # Interactive picker. Prompts MUST go to stderr: this function is
+      # always called via $(infer_milestone_gh), so anything on stdout is
+      # captured as the return value (invisible menu + a read that blocks
+      # with no visible prompt = silent hang). Only the chosen title is stdout.
       local i=1
-      printf '\nMultiple open milestones:\n'
+      printf '\nMultiple open milestones:\n' >&2
       printf '%s\n' "$milestones_json" | while read -r m; do
-        printf '%d) %s\n' "$i" "$m"
+        printf '%d) %s\n' "$i" "$m" >&2
         i=$((i+1))
       done
-      printf '\nSelect milestone (1-%d): ' "$count"
+      printf '\nSelect milestone (1-%d): ' "$count" >&2
       read -r choice
       if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$count" ]; then
         echo "ralph: invalid choice" >&2
