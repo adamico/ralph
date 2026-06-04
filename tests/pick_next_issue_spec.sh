@@ -142,6 +142,41 @@ pick "$d"; got="$PICK"
 assert_eq "case9: multi-dep with one undone -> picks earlier ready" "02-b.md" "$(basename_of "$got")"
 rm -rf "$d"
 
+# --- case 10: 'ready-for-agent' status is pickable (gh vocab parity) ---
+d=$(mk_fixture)
+write_issue "$d/issues/01-foo.md" ready-for-agent
+ALL_BLOCKED=0
+pick "$d"; got="$PICK"
+assert_eq "case10: ready-for-agent picked" "01-foo.md" "$(basename_of "$got")"
+assert_eq "case10: ALL_BLOCKED=0" "0" "$ALL_BLOCKED"
+rm -rf "$d"
+
+# --- case 11: 'Blocked-by: none' means no dependencies ---
+d=$(mk_fixture)
+write_issue "$d/issues/01-foo.md" ready-for-agent "none"
+ALL_BLOCKED=0
+pick "$d"; got="$PICK"
+assert_eq "case11: Blocked-by none => picked" "01-foo.md" "$(basename_of "$got")"
+assert_eq "case11: ALL_BLOCKED=0" "0" "$ALL_BLOCKED"
+rm -rf "$d"
+
+# --- case 12: 'Blocked-by: None' (any case) treated as none ---
+d=$(mk_fixture)
+write_issue "$d/issues/01-foo.md" ready "None"
+ALL_BLOCKED=0
+pick "$d"; got="$PICK"
+assert_eq "case12: Blocked-by None (case-insensitive) => picked" "01-foo.md" "$(basename_of "$got")"
+rm -rf "$d"
+
+# --- case 13: real numeric dep still blocks under ready-for-agent ---
+d=$(mk_fixture)
+write_issue "$d/issues/01-dep.md" ready-for-agent
+write_issue "$d/issues/02-needs.md" ready-for-agent "01-dep"
+ALL_BLOCKED=0
+pick "$d"; got="$PICK"
+assert_eq "case13: undone dep blocks, picks dep" "01-dep.md" "$(basename_of "$got")"
+rm -rf "$d"
+
 # --- session marker tests ---
 # Test that .ralph-logs/<scope>/running file is created with PID and cleaned up
 

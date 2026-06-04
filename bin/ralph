@@ -36,9 +36,13 @@ GH_LABEL_READY="${GH_LABEL_READY:-ready-for-agent}"
 GH_LABEL_BLOCKED="${GH_LABEL_BLOCKED:-blocked}"
 
 pick_next_issue() {
-  # ADR-0015: lowest filename with 'Status: ready' AND every Blocked-by
+  # ADR-0015: lowest filename with a ready Status AND every Blocked-by
   # is 'Status: done'. Echoes path or empty. Sets ALL_BLOCKED=1 if
   # unfinished issues remain but none pickable.
+  #
+  # Ready vocabulary mirrors the github backend (GH_LABEL_READY, default
+  # 'ready-for-agent'): both 'ready' and 'ready-for-agent' are accepted so
+  # the fs backend stays in sync with what the triage/to-issues skills emit.
   local prd_dir="$1"
   local issues_dir="$prd_dir/issues"
   ALL_BLOCKED=0
@@ -49,9 +53,14 @@ pick_next_issue() {
     status=$(grep -m1 '^Status:' "$f" | awk '{print $2}')
     [ "$status" = "done" ] && continue
     any_unfinished=1
-    [ "$status" = "ready" ] || continue
+    case "$status" in
+      ready|ready-for-agent) ;;
+      *) continue ;;
+    esac
     local bbline deps_ok=1
     bbline=$(grep -m1 '^Blocked-by:' "$f" | sed 's/^Blocked-by:[[:space:]]*//')
+    # 'none' (any case) is prose for "no dependencies", same as empty.
+    [ "$(printf '%s' "$bbline" | tr '[:upper:]' '[:lower:]')" = "none" ] && bbline=""
     if [ -n "$bbline" ]; then
       IFS=',' read -ra deps <<< "$bbline"
       for d in "${deps[@]}"; do
