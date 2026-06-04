@@ -235,6 +235,24 @@ Follow these priority rules (ADR-0015 style). Do not ask questions — act.
 EOF
 }
 
+read_active_marker() {
+  if [ ! -s "$MARKER_FILE" ]; then
+    echo "ralph: no active PRD in $MARKER_FILE. Stopping." >&2
+    return 10
+  fi
+  local active
+  active=$(head -1 "$MARKER_FILE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  if [ -z "$active" ]; then
+    echo "ralph: ACTIVE marker is empty. Stopping." >&2
+    return 1
+  fi
+  if echo "$active" | grep -qE '[/[:blank:]]'; then
+    echo "ralph: ACTIVE marker malformed (expected a single feature dirname, got: '$active'). Stopping." >&2
+    return 1
+  fi
+  echo "$active"
+}
+
 build_prompt() {
   local prd_dir="$1" issues_dir="$2"
   cat <<EOF
@@ -254,6 +272,7 @@ Follow these priority rules (ADR-0015 style). Do not ask questions — act.
    have pushed; a green from before your push reflects stale origin (false green).
 5. On success (gate green AFTER your push): set its header 'Status: done', append a
    one-paragraph entry to progress.txt, commit + push (issue file + code + progress).
+   Do NOT write to $MARKER_FILE — it is ralph-owned state. Progress notes go in progress.txt only.
 6. On failure (gate red after push, lint cannot pass, you give up): roll the branch
    back to the iteration baseline SHA so origin is green again (git reset --hard
    <baseline> + force-with-lease push; per ADR-0009, 'ralph recover' prints it),
@@ -994,12 +1013,8 @@ iterate_once() {
     picked_issue="$pick"
     prompt=$(build_prompt_gh "$milestone" "$pick")
   else
-    if [ ! -s "$MARKER_FILE" ]; then
-      echo "ralph: no active PRD in $MARKER_FILE. Stopping."
-      return 10
-    fi
     local active prd_dir
-    active=$(tr -d '[:space:]' < "$MARKER_FILE")
+    active=$(read_active_marker) || return $?
     prd_dir=".scratch/$active"
     if [ ! -d "$prd_dir" ]; then
       echo "ralph: active PRD '$prd_dir' missing. Stopping." >&2
