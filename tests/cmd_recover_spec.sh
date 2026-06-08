@@ -33,7 +33,9 @@ test_recovery_runbook_generation() {
   cd "$test_dir" || exit 1
 
   # Set up environment
+  # shellcheck disable=SC2034
   BACKEND="github"
+  # shellcheck disable=SC2034
   GH_REPO=""
 
   # Create baseline
@@ -134,7 +136,9 @@ test_recover_missing_baseline() {
   local orig_pwd="$PWD"
   cd "$test_dir" || exit 1
 
+  # shellcheck disable=SC2034
   BACKEND="github"
+  # shellcheck disable=SC2034
   GH_REPO=""
 
   # Try to recover with no baseline
@@ -168,7 +172,9 @@ test_recover_no_force_push_execution() {
   local orig_pwd="$PWD"
   cd "$test_dir" || exit 1
 
+  # shellcheck disable=SC2034
   BACKEND="github"
+  # shellcheck disable=SC2034
   GH_REPO=""
 
   # Create baseline
@@ -201,6 +207,7 @@ MOCK_GH
   PATH="./bin:$PATH"
 
   # Create a trap to detect if git push would be called
+  # shellcheck disable=SC2034
   TRAP_CALLED=0
   trap 'TRAP_CALLED=1' ERR
 

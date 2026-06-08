@@ -76,7 +76,7 @@ rm -rf "$d"
 
 # --- case 3: done issues skipped ---
 d=$(mk_fixture)
-write_issue "$d/issues/01-a.md" done
+write_issue "$d/issues/01-a.md" "done"
 write_issue "$d/issues/02-b.md" ready
 ALL_BLOCKED=0
 pick "$d"; got="$PICK"
@@ -95,7 +95,7 @@ rm -rf "$d"
 
 # --- case 5: blocked-by dep done => downstream picked ---
 d=$(mk_fixture)
-write_issue "$d/issues/01-dep.md" done
+write_issue "$d/issues/01-dep.md" "done"
 write_issue "$d/issues/02-needs.md" ready "01-dep"
 ALL_BLOCKED=0
 pick "$d"; got="$PICK"
@@ -114,8 +114,8 @@ rm -rf "$d"
 
 # --- case 7: all done => empty pick, ALL_BLOCKED=0 ---
 d=$(mk_fixture)
-write_issue "$d/issues/01-a.md" done
-write_issue "$d/issues/02-b.md" done
+write_issue "$d/issues/01-a.md" "done"
+write_issue "$d/issues/02-b.md" "done"
 ALL_BLOCKED=0
 pick "$d"; got="$PICK"
 assert_eq "case7: all done => empty pick" "" "$got"
@@ -134,7 +134,7 @@ rm -rf "$d"
 
 # --- case 9: multi-dep, one undone => not picked ---
 d=$(mk_fixture)
-write_issue "$d/issues/01-a.md" done
+write_issue "$d/issues/01-a.md" "done"
 write_issue "$d/issues/02-b.md" ready
 write_issue "$d/issues/03-c.md" ready "01-a, 02-b"
 ALL_BLOCKED=0
@@ -177,6 +177,192 @@ pick "$d"; got="$PICK"
 assert_eq "case13: undone dep blocks, picks dep" "01-dep.md" "$(basename_of "$got")"
 rm -rf "$d"
 
+# --- Agent CLI config/model resolution tests (issue #44) ---
+saved_AGENT_CLI="${AGENT_CLI:-}"
+saved_AGENT_CMD="${AGENT_CMD:-}"
+saved_AGENT_ARGS="${AGENT_ARGS:-}"
+saved_CLAUDE_CMD="${CLAUDE_CMD:-}"
+saved_MODEL="${MODEL:-}"
+saved_MODEL_CLASS="${MODEL_CLASS:-}"
+saved_WARNED="${LEGACY_CLAUDE_CMD_WARNED:-0}"
+
+reset_agent_resolution_state() {
+  AGENT_CLI="$saved_AGENT_CLI"
+  AGENT_CMD="$saved_AGENT_CMD"
+  AGENT_ARGS="$saved_AGENT_ARGS"
+  CLAUDE_CMD="$saved_CLAUDE_CMD"
+  MODEL="$saved_MODEL"
+  MODEL_CLASS="$saved_MODEL_CLASS"
+  LEGACY_CLAUDE_CMD_WARNED=0
+  RESOLVED_AGENT_CLI=""
+  RESOLVED_AGENT_CMD=""
+  RESOLVED_AGENT_ARGS=""
+  RESOLVED_MODEL=""
+  RESOLVED_MODEL_SOURCE=""
+  # shellcheck disable=SC2034
+  RESOLVED_MODEL_CLASS=""
+}
+
+test_agent_cli_new_config() {
+  reset_agent_resolution_state
+  AGENT_CLI="codex"
+  AGENT_CMD="codex-wrapper"
+  AGENT_ARGS="exec --json"
+  MODEL=""
+  MODEL_CLASS="low"
+
+  local rc
+  resolve_agent_cli_config >/dev/null 2>&1; rc=$?
+  assert_eq "agent_config: new config resolves" "0" "$rc"
+  assert_eq "agent_config: cli=codex" "codex" "$RESOLVED_AGENT_CLI"
+  assert_eq "agent_config: cmd preserved" "codex-wrapper" "$RESOLVED_AGENT_CMD"
+  assert_eq "agent_config: args preserved" "exec --json" "$RESOLVED_AGENT_ARGS"
+
+  resolve_model_config "$RESOLVED_AGENT_CLI" >/dev/null 2>&1; rc=$?
+  assert_eq "agent_config: model config resolves" "0" "$rc"
+  assert_eq "agent_config: codex low -> gpt-5.4" "gpt-5.4" "$RESOLVED_MODEL"
+  assert_eq "agent_config: codex low source" "model-class:low" "$RESOLVED_MODEL_SOURCE"
+}
+
+test_agent_cli_legacy_claude_mapping_warns_once() {
+  reset_agent_resolution_state
+  AGENT_CLI=""
+  AGENT_CMD=""
+  CLAUDE_CMD="legacy-claude"
+  MODEL=""
+  MODEL_CLASS="low"
+
+  local err1 err2 rc
+  err1=$(mktemp)
+  err2=$(mktemp)
+
+  resolve_agent_cli_config >/dev/null 2>"$err1"; rc=$?
+  assert_eq "legacy_claude: first resolve succeeds" "0" "$rc"
+  assert_eq "legacy_claude: mapped cli" "claude" "$RESOLVED_AGENT_CLI"
+  assert_eq "legacy_claude: mapped command" "legacy-claude" "$RESOLVED_AGENT_CMD"
+  if grep -q "CLAUDE_CMD is deprecated" "$err1"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("legacy_claude: deprecation warning missing on first resolve")
+    echo "FAIL: legacy_claude: deprecation warning missing on first resolve"
+  fi
+
+  resolve_agent_cli_config >/dev/null 2>"$err2"; rc=$?
+  assert_eq "legacy_claude: second resolve succeeds" "0" "$rc"
+  if [ ! -s "$err2" ]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("legacy_claude: warning repeated")
+    echo "FAIL: legacy_claude: warning repeated"
+  fi
+
+  rm -f "$err1" "$err2"
+}
+
+test_agent_cli_new_command_beats_legacy() {
+  reset_agent_resolution_state
+  AGENT_CLI="claude"
+  AGENT_CMD="new-claude"
+  CLAUDE_CMD="legacy-claude"
+
+  local err rc
+  err=$(mktemp)
+  resolve_agent_cli_config >/dev/null 2>"$err"; rc=$?
+  assert_eq "new_beats_legacy: resolve succeeds" "0" "$rc"
+  assert_eq "new_beats_legacy: uses AGENT_CMD" "new-claude" "$RESOLVED_AGENT_CMD"
+  if [ ! -s "$err" ]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("new_beats_legacy: unexpected deprecation warning")
+    echo "FAIL: new_beats_legacy: unexpected deprecation warning"
+  fi
+  rm -f "$err"
+}
+
+test_agent_cli_explicit_model_override_and_pi_default() {
+  reset_agent_resolution_state
+  AGENT_CLI="claude"
+  AGENT_CMD="claude"
+  MODEL="haiku"
+  MODEL_CLASS="low"
+
+  local rc
+  resolve_agent_cli_config >/dev/null 2>&1; rc=$?
+  assert_eq "explicit_model: cli resolve succeeds" "0" "$rc"
+  resolve_model_config "$RESOLVED_AGENT_CLI" >/dev/null 2>&1; rc=$?
+  assert_eq "explicit_model: model resolve succeeds" "0" "$rc"
+  assert_eq "explicit_model: explicit model wins" "haiku" "$RESOLVED_MODEL"
+  assert_eq "explicit_model: source=explicit" "explicit" "$RESOLVED_MODEL_SOURCE"
+
+  reset_agent_resolution_state
+  AGENT_CLI="pi"
+  AGENT_CMD="pi"
+  MODEL=""
+  MODEL_CLASS="low"
+
+  resolve_agent_cli_config >/dev/null 2>&1; rc=$?
+  assert_eq "pi_default: cli resolve succeeds" "0" "$rc"
+  resolve_model_config "$RESOLVED_AGENT_CLI" >/dev/null 2>&1; rc=$?
+  assert_eq "pi_default: model resolve succeeds" "0" "$rc"
+  assert_eq "pi_default: no ralph-owned model" "" "$RESOLVED_MODEL"
+  assert_eq "pi_default: provider-default source" "provider-default" "$RESOLVED_MODEL_SOURCE"
+}
+
+test_agent_cli_rejects_unsupported_names() {
+  reset_agent_resolution_state
+  AGENT_CLI="cursor"
+  AGENT_CMD="cursor"
+
+  local err rc
+  err=$(mktemp)
+  resolve_agent_cli_config >/dev/null 2>"$err"; rc=$?
+  assert_eq "unsupported_cli: resolve fails" "1" "$rc"
+  if grep -q "unsupported AGENT_CLI 'cursor'" "$err"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("unsupported_cli: error message missing")
+    echo "FAIL: unsupported_cli: error message missing"
+  fi
+  rm -f "$err"
+}
+
+test_agent_model_manifest_values() {
+  reset_agent_resolution_state
+  RESOLVED_AGENT_CLI="codex"
+  RESOLVED_MODEL="gpt-5.4"
+  RESOLVED_MODEL_SOURCE="model-class:low"
+  # shellcheck disable=SC2034
+  RESOLVED_MODEL_DISPLAY="gpt-5.4 (MODEL_CLASS=low default)"
+  assert_eq "manifest_model: codex default text" "gpt-5.4 (MODEL_CLASS=low default)" "$(agent_model_manifest_value)"
+
+  RESOLVED_AGENT_CLI="pi"
+  RESOLVED_MODEL=""
+  RESOLVED_MODEL_SOURCE="provider-default"
+  # shellcheck disable=SC2034
+  RESOLVED_MODEL_DISPLAY="provider default (MODEL_CLASS=low; ralph omits --model)"
+  assert_eq "manifest_model: pi provider default text" "provider default (MODEL_CLASS=low; ralph omits --model)" "$(agent_model_manifest_value)"
+
+  RESOLVED_AGENT_CLI="claude"
+  RESOLVED_MODEL="haiku"
+  RESOLVED_MODEL_SOURCE="explicit"
+  # shellcheck disable=SC2034
+  RESOLVED_MODEL_DISPLAY="haiku (explicit)"
+  assert_eq "manifest_model: explicit text" "haiku (explicit)" "$(agent_model_manifest_value)"
+}
+
+test_agent_cli_new_config
+test_agent_cli_legacy_claude_mapping_warns_once
+test_agent_cli_new_command_beats_legacy
+test_agent_cli_explicit_model_override_and_pi_default
+test_agent_cli_rejects_unsupported_names
+test_agent_model_manifest_values
+
+LEGACY_CLAUDE_CMD_WARNED="$saved_WARNED"
+
 # --- session marker tests ---
 # Test that .ralph-logs/<scope>/running file is created with PID and cleaned up
 
@@ -185,8 +371,11 @@ TEST_DIR=$(mktemp -d)
 cd "$TEST_DIR" || exit 1
 
 # Create minimal fixture for GitHub backend test
+# shellcheck disable=SC2034
 BACKEND="github"
+# shellcheck disable=SC2034
 GH_LABEL_READY="ready-for-agent"
+# shellcheck disable=SC2034
 GH_LABEL_BLOCKED="blocked"
 
 # Mock CLAUDE_CMD to return immediately
@@ -265,11 +454,16 @@ MOCK_CLAUDE
   chmod +x bin/claude
 
   # Setup environment
+  # shellcheck disable=SC2034
   BACKEND=github
+  # shellcheck disable=SC2034
   GH_REPO=""
   CLAUDE_CMD="./bin/claude"
+  # shellcheck disable=SC2034
   MODEL="sonnet"
+  # shellcheck disable=SC2034
   TEST_CMD="true"
+  # shellcheck disable=SC2034
   LINT_CMD="true"
 
   # Create a minimal milestone for testing (mock gh command)

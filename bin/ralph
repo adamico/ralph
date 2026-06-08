@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# ralph — Ralph Wiggum loop for AFK Claude Code runs.
+# ralph — Ralph Wiggum loop for AFK agent-cli runs.
 # Drains issues per ADR-0015 priority rules; overridable via .ralph.conf.
 set -uo pipefail
 
 usage() {
   cat <<EOF
 Usage:
-  ralph once [-i] [<milestone>]      # one iteration; -i runs claude interactively (milestone required for github backend)
+  ralph once [-i] [<milestone>]      # one iteration; -i runs legacy interactive mode (milestone required for github backend)
   ralph run <N> [<milestone>]        # up to N iterations, halts on COMPLETE/BLOCKED
   ralph ls [<prd|milestone>]         # list PRDs/milestones or show issue queue
   ralph status                       # inspect running iterations + suspicious processes
@@ -22,11 +22,15 @@ EOF
 STUCK_CPU_SECS="${STUCK_CPU_SECS:-180}"
 
 # --- defaults ---------------------------------------------------------
-CLAUDE_CMD="claude"
+AGENT_CLI="${AGENT_CLI:-}"
+AGENT_CMD="${AGENT_CMD:-}"
+AGENT_ARGS="${AGENT_ARGS:-}"
+CLAUDE_CMD="${CLAUDE_CMD:-}"
 MARKER_FILE=".scratch/ACTIVE"
 TEST_CMD="./run_tests"
 LINT_CMD="/lint"
-MODEL="${MODEL:-sonnet}"
+MODEL="${MODEL:-}"
+MODEL_CLASS="${MODEL_CLASS:-low}"
 
 # Backend: 'fs' (default, .scratch/<active>/issues/*.md) or 'github'.
 BACKEND="${BACKEND:-fs}"
@@ -34,6 +38,14 @@ BACKEND="${BACKEND:-fs}"
 GH_REPO="${GH_REPO:-}"                    # optional; defaults to gh-detected repo
 GH_LABEL_READY="${GH_LABEL_READY:-ready-for-agent}"
 GH_LABEL_BLOCKED="${GH_LABEL_BLOCKED:-blocked}"
+LEGACY_CLAUDE_CMD_WARNED=0
+RESOLVED_AGENT_CLI=""
+RESOLVED_AGENT_CMD=""
+RESOLVED_AGENT_ARGS=""
+RESOLVED_MODEL=""
+RESOLVED_MODEL_SOURCE=""
+RESOLVED_MODEL_CLASS=""
+RESOLVED_MODEL_DISPLAY=""
 
 pick_next_issue() {
   # ADR-0015: lowest filename with a ready Status AND every Blocked-by
@@ -91,6 +103,7 @@ infer_milestone_gh() {
   [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
 
   local milestones_json
+  # shellcheck disable=SC2086
   milestones_json=$(gh api $repo_flag repos/:owner/:repo/milestones?state=open 2>/dev/null | jq -r '.[] | .title') || {
     echo "ralph: failed to fetch milestones" >&2
     return 1
@@ -142,12 +155,14 @@ close_milestone_gh() {
   [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
 
   local milestone_num
+  # shellcheck disable=SC2086
   milestone_num=$(gh api $repo_flag "repos/:owner/:repo/milestones" \
     --jq ".[] | select(.title == \"$milestone\") | .number" 2>/dev/null)
   if [ -z "$milestone_num" ]; then
     echo "ralph: warning: could not resolve milestone number for '$milestone'; skipping auto-close" >&2
     return 0
   fi
+  # shellcheck disable=SC2086
   if gh api $repo_flag "repos/:owner/:repo/milestones/$milestone_num" \
        -X PATCH -f state=closed >/dev/null 2>&1; then
     echo "ralph: milestone '$milestone' closed."
@@ -170,6 +185,7 @@ pick_next_issue_gh() {
 
   # All open issues in milestone, sorted ascending by number.
   local open_json
+  # shellcheck disable=SC2086
   open_json=$(gh issue list $repo_flag --milestone "$milestone" --state open \
               --json number,labels,body --limit 200 2>/dev/null) || { echo ""; return 0; }
   local any_open
@@ -195,6 +211,7 @@ pick_next_issue_gh() {
         d=$(printf '%s' "$d" | tr -d '[:space:]#')
         [ -z "$d" ] && continue
         local dstate
+        # shellcheck disable=SC2086
         dstate=$(gh issue view "$d" $repo_flag --json state -q .state 2>/dev/null)
         if [ "$dstate" != "CLOSED" ]; then deps_ok=0; break; fi
       done
@@ -328,6 +345,7 @@ read_baseline() {
   BASELINE_SHA=$(_bl_val sha)
   BASELINE_ISSUE=$(_bl_val issue)
   BASELINE_BRANCH=$(_bl_val branch)
+  # shellcheck disable=SC2034
   BASELINE_TIMESTAMP=$(_bl_val timestamp)
   unset -f _bl_val
 
@@ -349,20 +367,121 @@ ralph run 1 $milestone
 EOF
 }
 
+warn_legacy_claude_cmd_once() {
+  if [ "$LEGACY_CLAUDE_CMD_WARNED" -eq 0 ]; then
+    echo "ralph: warning: CLAUDE_CMD is deprecated; prefer AGENT_CLI=claude with AGENT_CMD." >&2
+    LEGACY_CLAUDE_CMD_WARNED=1
+  fi
+}
+
+resolve_agent_cli_config() {
+  local cli="${AGENT_CLI:-}"
+  local cmd="${AGENT_CMD:-}"
+  local args="${AGENT_ARGS:-}"
+  local legacy_cmd="${CLAUDE_CMD:-}"
+
+  if [ -n "$cmd" ] && [ -z "$cli" ]; then
+    echo "ralph: AGENT_CMD is set but AGENT_CLI is missing" >&2
+    return 1
+  fi
+
+  if [ -z "$cmd" ]; then
+    if [ -n "$legacy_cmd" ] && { [ -z "$cli" ] || [ "$cli" = "claude" ]; }; then
+      cmd="$legacy_cmd"
+      cli="claude"
+      warn_legacy_claude_cmd_once
+    elif [ -z "$cli" ]; then
+      cli="claude"
+      cmd="claude"
+    else
+      cmd="$cli"
+    fi
+  fi
+
+  if [ -z "$cli" ]; then
+    cli="claude"
+  fi
+
+  case "$cli" in
+    claude|codex|pi) ;;
+    *)
+      echo "ralph: unsupported AGENT_CLI '$cli' (expected: claude, codex, pi)" >&2
+      return 1
+      ;;
+  esac
+
+  RESOLVED_AGENT_CLI="$cli"
+  RESOLVED_AGENT_CMD="$cmd"
+  RESOLVED_AGENT_ARGS="$args"
+  return 0
+}
+
+resolve_model_config() {
+  local cli="$1"
+  local model_class="${MODEL_CLASS:-low}"
+
+  # shellcheck disable=SC2034
+  RESOLVED_MODEL_CLASS="$model_class"
+
+  if [ -n "${MODEL:-}" ]; then
+    RESOLVED_MODEL="$MODEL"
+    RESOLVED_MODEL_SOURCE="explicit"
+    RESOLVED_MODEL_DISPLAY="$MODEL (explicit)"
+    return 0
+  fi
+
+  case "$model_class" in
+    low) ;;
+    *)
+      echo "ralph: unsupported MODEL_CLASS '$model_class' (expected: low)" >&2
+      return 1
+      ;;
+  esac
+
+  case "$cli" in
+    claude)
+      RESOLVED_MODEL="sonnet"
+      RESOLVED_MODEL_SOURCE="model-class:$model_class"
+      RESOLVED_MODEL_DISPLAY="sonnet (MODEL_CLASS=$model_class default)"
+      ;;
+    codex)
+      RESOLVED_MODEL="gpt-5.4"
+      RESOLVED_MODEL_SOURCE="model-class:$model_class"
+      RESOLVED_MODEL_DISPLAY="gpt-5.4 (MODEL_CLASS=$model_class default)"
+      ;;
+    pi)
+      RESOLVED_MODEL=""
+      # shellcheck disable=SC2034
+      RESOLVED_MODEL_SOURCE="provider-default"
+      RESOLVED_MODEL_DISPLAY="provider default (MODEL_CLASS=$model_class; ralph omits --model)"
+      ;;
+  esac
+  return 0
+}
+
+agent_model_manifest_value() {
+  printf '%s' "$RESOLVED_MODEL_DISPLAY"
+}
+
 # --- load project config ---------------------------------------------
 SANDBOX_NAME=""
+# shellcheck disable=SC1091
 [ -f ./.ralph.conf ] && . ./.ralph.conf
 
-# Auto-derive sandbox name from CLAUDE_CMD if not set: `sbx run <name>` or
-# `sbx run claude --` (default name pattern is claude-<workdir>).
-if [ -z "$SANDBOX_NAME" ] && [[ "$CLAUDE_CMD" == *"sbx run"* ]]; then
-  arg=$(echo "$CLAUDE_CMD" | awk '{for (i=1;i<=NF;i++) if ($i=="run") {print $(i+1); exit}}')
+# Auto-derive sandbox name from the configured command if not set:
+# `sbx run <name>` or `sbx run claude --` (default name pattern is
+# claude-<workdir>). Prefer AGENT_CMD when present; otherwise fall back
+# to CLAUDE_CMD for legacy configs.
+_sandbox_cmd="${AGENT_CMD:-${CLAUDE_CMD:-}}"
+if [ -z "$SANDBOX_NAME" ] && [[ "$_sandbox_cmd" == *"sbx run"* ]]; then
+  arg=$(echo "$_sandbox_cmd" | awk '{for (i=1;i<=NF;i++) if ($i=="run") {print $(i+1); exit}}')
   if [ "$arg" = "claude" ] || [ -z "$arg" ]; then
     SANDBOX_NAME="claude-$(basename "$PWD")"
   else
     SANDBOX_NAME="$arg"
   fi
 fi
+unset _sandbox_cmd
 
 cmd_status() {
   # sbx exec attaches to the terminal and leaves it in raw mode (no
@@ -479,6 +598,7 @@ cmd_inspect_list() {
   # bash 3 compat (no mapfile) and set -u safe (guard empty array)
   local files=()
   local f
+  # shellcheck disable=SC2012
   while IFS= read -r f; do
     [ -n "$f" ] && files+=("$f")
   done < <(ls -1 "$logs_dir"/iter-* 2>/dev/null | sort -V)
@@ -491,10 +611,12 @@ cmd_inspect_list() {
     basename=$(basename "$log_file")
     # Extract iteration number from iter-N-timestamp
     local iter_num
+    # shellcheck disable=SC2001
     iter_num=$(echo "$basename" | sed 's/iter-\([0-9]*\)-.*/\1/')
 
     # Extract timestamp from filename (second component)
     local ts
+    # shellcheck disable=SC2001
     ts=$(echo "$basename" | sed 's/iter-[0-9]*-\([0-9]*\).jsonl/\1/')
     if [ -n "$ts" ] && [ "$ts" != "$basename" ]; then
       # Convert Unix timestamp to readable format
@@ -526,6 +648,7 @@ cmd_inspect_replay() {
 
   # Find the log file for this iteration
   local log_file
+  # shellcheck disable=SC2012
   log_file=$(ls "$logs_dir"/iter-"$iter_num"-* 2>/dev/null | head -1)
   if [ -z "$log_file" ] || [ ! -f "$log_file" ]; then
     echo "ralph: iteration $iter_num not found in $logs_dir"
@@ -763,8 +886,10 @@ ls_issues_gh() {
   all_blocked_val=$(cat "$_ab_tmp"); rm -f "$_ab_tmp"
 
   local open_json closed_json
+  # shellcheck disable=SC2086
   open_json=$(gh issue list $repo_flag --milestone "$milestone" --state open \
               --json number,title,labels,body --limit 200 2>/dev/null) || open_json="[]"
+  # shellcheck disable=SC2086
   closed_json=$(gh issue list $repo_flag --milestone "$milestone" --state closed \
                 --json number,title --limit 200 2>/dev/null) || closed_json="[]"
 
@@ -856,6 +981,7 @@ cmd_recover() {
     local repo_flag=""
     [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
     local issue_state
+    # shellcheck disable=SC2086
     issue_state=$(gh issue view "$baseline_issue" $repo_flag --json state -q .state 2>/dev/null)
     if [ "$issue_state" != "OPEN" ]; then
       echo "ralph: warning: issue #$baseline_issue is not OPEN (state: $issue_state)" >&2
@@ -902,6 +1028,7 @@ check_main_branch_guard() {
   if [ "$BACKEND" = "github" ]; then
     local repo_flag=""
     [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
+    # shellcheck disable=SC2086
     default_branch=$(gh api $repo_flag repos/:owner/:repo --jq '.default_branch' 2>/dev/null)
   fi
 
@@ -965,14 +1092,25 @@ check_clean_tree_guard() {
 cmd_ls() {
   local arg="${1:-}"
   if [ "$BACKEND" = "github" ]; then
-    [ -n "$arg" ] && ls_issues_gh "$arg" || ls_milestones
+    if [ -n "$arg" ]; then
+      ls_issues_gh "$arg"
+    else
+      ls_milestones
+    fi
   else
-    [ -n "$arg" ] && ls_issues_fs "$arg" || ls_prds
+    if [ -n "$arg" ]; then
+      ls_issues_fs "$arg"
+    else
+      ls_prds
+    fi
   fi
 }
 
 # --- subcommands ------------------------------------------------------
 iterate_once() {
+  resolve_agent_cli_config || return 1
+  resolve_model_config "$RESOLVED_AGENT_CLI" || return 1
+
   # Preflight guard: refuse to run on main/default branch
   check_main_branch_guard || return 11
   # Preflight guard: refuse to run with a dirty/unpushed tree (false-green hazard, ADR-0010)
@@ -1025,11 +1163,21 @@ iterate_once() {
 
   local result rc
   if [ "$interactive" = 1 ]; then
+    if [ "$RESOLVED_AGENT_CLI" != "claude" ]; then
+      echo "ralph: AGENT_CLI=$RESOLVED_AGENT_CLI is configured, but interactive execution is not implemented for this adapter yet" >&2
+      return 1
+    fi
     # Interactive TUI — no -p, no capture. Promise auto-detection disabled.
-    $CLAUDE_CMD --model sonnet --dangerously-skip-permissions "$prompt"
+    if [ -n "$RESOLVED_MODEL" ]; then
+      # shellcheck disable=SC2086
+      $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS --model "$RESOLVED_MODEL" --dangerously-skip-permissions "$prompt"
+    else
+      # shellcheck disable=SC2086
+      $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS --dangerously-skip-permissions "$prompt"
+    fi
     rc=$?
     if [ $rc -ne 0 ]; then
-      echo "ralph: claude invocation failed (rc=$rc)" >&2
+      echo "ralph: $RESOLVED_AGENT_CLI invocation failed (rc=$rc)" >&2
       return 1
     fi
     return 0
@@ -1048,30 +1196,39 @@ iterate_once() {
   local logs_dir=".ralph-logs/$scope"
   mkdir -p "$logs_dir" || { echo "ralph: failed to create logs directory" >&2; return 1; }
 
-  # Record the iteration baseline before invoking Claude (both backends).
+  # Record the iteration baseline before invoking the agent CLI (both backends).
   record_baseline "$scope" "$picked_issue"
 
   # Create session marker (PID file) and set up cleanup trap
   local running_file="$logs_dir/running"
   echo "$$" > "$running_file" || { echo "ralph: failed to create running file" >&2; return 1; }
+  # shellcheck disable=SC2064
   trap "rm -f '$running_file'" EXIT
 
   local ts iter_num log_file
   ts=$(date +%s)
+  # shellcheck disable=SC2012
   iter_num=$(ls "$logs_dir"/iter-* 2>/dev/null | wc -l | awk '{print $1+1}')
   log_file="$logs_dir/iter-${iter_num}-${ts}.jsonl"
 
-  # Manifest: announce what this iteration is about to do before claude streams.
+  # Manifest: announce what this iteration is about to do before the agent streams.
   printf '\n── ralph iteration %s ─────────────────────────────\n' "$iter_num"
   printf '  scope:  %s\n' "$scope"
-  printf '  issue:  %s\n' "${picked_issue:-(claude picks)}"
-  printf '  model:  %s\n' "$MODEL"
+  printf '  issue:  %s\n' "${picked_issue:-(agent picks)}"
+  printf '  agent:  %s\n' "$RESOLVED_AGENT_CLI"
+  printf '  model:  %s\n' "$(agent_model_manifest_value)"
   printf '  branch: %s\n' "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo n/a)"
   printf '  log:    %s\n' "$log_file"
   printf '────────────────────────────────────────────────────\n\n'
 
+  if [ "$RESOLVED_AGENT_CLI" != "claude" ]; then
+    echo "ralph: AGENT_CLI=$RESOLVED_AGENT_CLI is configured, but non-interactive execution is not implemented for this adapter yet" >&2
+    return 1
+  fi
+
   # Stream live text output to terminal while writing raw JSONL to file
-  $CLAUDE_CMD --output-format stream-json --verbose --effort low --model "$MODEL" --dangerously-skip-permissions -p "$prompt" 2>&1 \
+  # shellcheck disable=SC2086
+  $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS --output-format stream-json --verbose --effort low --model "$RESOLVED_MODEL" --dangerously-skip-permissions -p "$prompt" 2>&1 \
     | grep --line-buffered '^{' \
     | tee "$log_file" \
     | jq -r '
@@ -1084,8 +1241,8 @@ iterate_once() {
         else empty end
         | select(. != "") | gsub("\n"; "\r\n") | . + "\r\n\n"'
   rc=${PIPESTATUS[0]}
-  if [ $rc -ne 0 ]; then
-    echo "ralph: claude invocation failed (rc=$rc)" >&2
+  if [ "$rc" -ne 0 ]; then
+    echo "ralph: $RESOLVED_AGENT_CLI invocation failed (rc=$rc)" >&2
     return 1
   fi
 
