@@ -475,9 +475,11 @@ MOCK_CLAUDE
 
   # Simulate what iterate_once does
   local ts iter_num log_file
+  local final_file
   ts=$(date +%s)
   iter_num=1
   log_file="$logs_dir/iter-${iter_num}-${ts}.jsonl"
+  final_file=$(iteration_final_message_file "$log_file")
 
   # Stream through the mock claude
   $CLAUDE_CMD --output-format stream-json 2>&1 \
@@ -502,6 +504,15 @@ MOCK_CLAUDE
     echo "FAIL: jsonl_creation: expected content not found"
   fi
 
+  write_final_message_artifact "claude" "$log_file" "$final_file"
+  if [ -f "$final_file" ] && grep -q 'Implementing...' "$final_file"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("jsonl_creation: final message artifact missing or wrong")
+    echo "FAIL: jsonl_creation: final message artifact missing or wrong"
+  fi
+
   # Cleanup
   cd / || true
   rm -rf "$test_dir"
@@ -517,16 +528,18 @@ test_promise_detection() {
 
   mkdir -p logs
 
-  # Create test JSONL with COMPLETE promise
+  # Create test JSONL with COMPLETE promise in the final assistant message
   cat > logs/iter-1.jsonl << 'EOF'
 {"type":"assistant","message":{"content":[{"type":"text","text":"Working..."}]}}
-{"type":"result","result":"<promise>COMPLETE</promise>"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Done.\n<promise>COMPLETE</promise>"}]}}
+{"type":"result","result":"legacy result"} 
 EOF
 
-  # Create test JSONL with BLOCKED promise
+  # Create test JSONL with BLOCKED promise in the final assistant message
   cat > logs/iter-2.jsonl << 'EOF'
 {"type":"assistant","message":{"content":[{"type":"text","text":"Stuck..."}]}}
-{"type":"result","result":"<promise>BLOCKED</promise>"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Need help.\n<promise>BLOCKED</promise>"}]}}
+{"type":"result","result":"legacy result"} 
 EOF
 
   # Create test JSONL with no promise
@@ -534,11 +547,15 @@ EOF
 {"type":"assistant","message":{"content":[{"type":"text","text":"In progress..."}]}}
 EOF
 
+  write_final_message_artifact "claude" logs/iter-1.jsonl "$(iteration_final_message_file logs/iter-1.jsonl)"
+  write_final_message_artifact "claude" logs/iter-2.jsonl "$(iteration_final_message_file logs/iter-2.jsonl)"
+  write_final_message_artifact "claude" logs/iter-3.jsonl "$(iteration_final_message_file logs/iter-3.jsonl)"
+
   # Test promise extraction
   local promise
 
-  promise=$(jq -r 'select(.type == "result").result // empty' < logs/iter-1.jsonl)
-  if [[ "$promise" == *"COMPLETE"* ]]; then
+  promise=$(extract_promise_from_iteration_artifacts logs/iter-1.jsonl)
+  if [ "$promise" = "COMPLETE" ]; then
     PASS=$((PASS+1))
   else
     FAIL=$((FAIL+1))
@@ -546,8 +563,8 @@ EOF
     echo "FAIL: promise_detection: COMPLETE not detected"
   fi
 
-  promise=$(jq -r 'select(.type == "result").result // empty' < logs/iter-2.jsonl)
-  if [[ "$promise" == *"BLOCKED"* ]]; then
+  promise=$(extract_promise_from_iteration_artifacts logs/iter-2.jsonl)
+  if [ "$promise" = "BLOCKED" ]; then
     PASS=$((PASS+1))
   else
     FAIL=$((FAIL+1))
@@ -555,7 +572,7 @@ EOF
     echo "FAIL: promise_detection: BLOCKED not detected"
   fi
 
-  promise=$(jq -r 'select(.type == "result").result // empty' < logs/iter-3.jsonl)
+  promise=$(extract_promise_from_iteration_artifacts logs/iter-3.jsonl)
   if [ -z "$promise" ]; then
     PASS=$((PASS+1))
   else
@@ -570,6 +587,55 @@ EOF
 }
 
 test_promise_detection
+
+# --- Claude adapter artifact tests (issue #45) ---
+test_claude_final_message_extraction() {
+  local test_dir
+  test_dir=$(mktemp -d)
+  cd "$test_dir" || exit 1
+
+  mkdir -p logs
+  cat > logs/iter-1.jsonl << 'EOF'
+{"type":"assistant","message":{"content":[{"type":"text","text":"First draft"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"bash","input":{"cmd":"echo hi"}}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Final line 1"},{"type":"text","text":"Final line 2\n<promise>COMPLETE</promise>"}]}}
+EOF
+
+  local final_file final_text
+  final_file=$(iteration_final_message_file logs/iter-1.jsonl)
+  write_final_message_artifact "claude" logs/iter-1.jsonl "$final_file"
+  final_text=$(cat "$final_file")
+
+  assert_eq "claude_final_message: extracted final text block" $'Final line 1\nFinal line 2\n<promise>COMPLETE</promise>' "$final_text"
+  assert_eq "claude_final_message: promise comes from final artifact" "COMPLETE" "$(extract_promise_from_iteration_artifacts logs/iter-1.jsonl)"
+
+  cd / || true
+  rm -rf "$test_dir"
+}
+
+test_claude_final_message_extraction
+
+test_promise_detection_prefers_final_message_and_legacy_fallback() {
+  local test_dir
+  test_dir=$(mktemp -d)
+  cd "$test_dir" || exit 1
+
+  mkdir -p logs
+  cat > logs/iter-1.jsonl << 'EOF'
+{"type":"assistant","message":{"content":[{"type":"text","text":"Working..."}]}}
+{"type":"result","result":"<promise>COMPLETE</promise>"}
+EOF
+  printf '%s\n' '<promise>BLOCKED</promise>' > "$(iteration_final_message_file logs/iter-1.jsonl)"
+  assert_eq "promise_preference: final artifact beats legacy result" "BLOCKED" "$(extract_promise_from_iteration_artifacts logs/iter-1.jsonl)"
+
+  rm -f "$(iteration_final_message_file logs/iter-1.jsonl)"
+  assert_eq "promise_preference: legacy fallback still works" "COMPLETE" "$(extract_promise_from_iteration_artifacts logs/iter-1.jsonl)"
+
+  cd / || true
+  rm -rf "$test_dir"
+}
+
+test_promise_detection_prefers_final_message_and_legacy_fallback
 
 # --- Inspect list mode test (issue #16) ---
 test_inspect_list() {

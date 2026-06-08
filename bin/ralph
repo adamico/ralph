@@ -568,10 +568,67 @@ extract_issue_from_jsonl() {
     | grep -oE 'Picked issue: #[0-9]+' | grep -oE '[0-9]+' | head -1 || echo ""
 }
 
-extract_promise_from_jsonl() {
-  # Extract promise result (COMPLETE or BLOCKED) from JSONL file
+iteration_final_message_file() {
   local log_file="$1"
+  printf '%s\n' "${log_file%.jsonl}.final.txt"
+}
+
+extract_claude_final_message_from_jsonl() {
+  # Extract the last assistant text message from Claude stream-json output.
+  local log_file="$1"
+  jq -rs '
+    map(
+      select(.type == "assistant")
+      | [(.message.content // [])[] | select(.type == "text") | .text]
+      | join("\n")
+      | select(length > 0)
+    )
+    | last // empty
+  ' < "$log_file"
+}
+
+write_final_message_artifact() {
+  local agent_cli="$1" log_file="$2" final_file="$3"
+
+  case "$agent_cli" in
+    claude)
+      extract_claude_final_message_from_jsonl "$log_file" > "$final_file"
+      ;;
+    *)
+      echo "ralph: no final-message writer for AGENT_CLI=$agent_cli" >&2
+      return 1
+      ;;
+  esac
+}
+
+extract_promise_from_final_message_file() {
+  local final_file="$1"
+  [ -f "$final_file" ] || return 0
+
   local result
+  result=$(cat "$final_file")
+  if [[ "$result" == *"<promise>COMPLETE</promise>"* ]]; then
+    echo "COMPLETE"
+  elif [[ "$result" == *"<promise>BLOCKED</promise>"* ]]; then
+    echo "BLOCKED"
+  else
+    echo ""
+  fi
+}
+
+extract_promise_from_iteration_artifacts() {
+  # Prefer the adapter's final-message artifact; fall back to legacy JSONL
+  # result parsing so existing logs remain inspectable.
+  local log_file="$1"
+  local final_file promise result
+
+  final_file=$(iteration_final_message_file "$log_file")
+  promise=$(extract_promise_from_final_message_file "$final_file")
+  if [ -n "$promise" ]; then
+    echo "$promise"
+    return 0
+  fi
+
   result=$(jq -r 'select(.type == "result").result // empty' < "$log_file")
   if [[ "$result" == *"<promise>COMPLETE</promise>"* ]]; then
     echo "COMPLETE"
@@ -626,7 +683,7 @@ cmd_inspect_list() {
     fi
 
     local promise issue
-    promise=$(extract_promise_from_jsonl "$log_file")
+    promise=$(extract_promise_from_iteration_artifacts "$log_file")
     issue=$(extract_issue_from_jsonl "$log_file")
 
     printf '%6s  %-19s  %7s  %s\n' "$iter_num" "$ts" "$promise" "${issue:-—}"
@@ -659,7 +716,7 @@ cmd_inspect_replay() {
 
   # Extract promise result for header
   local promise
-  promise=$(extract_promise_from_jsonl "$log_file")
+  promise=$(extract_promise_from_iteration_artifacts "$log_file")
   local issue
   issue=$(extract_issue_from_jsonl "$log_file")
 
@@ -735,7 +792,7 @@ cmd_inspect_tail() {
       # Check if iteration has completed and we haven't printed promise yet
       if [ ! -f "$promise_file" ]; then
         local promise
-        promise=$(extract_promise_from_jsonl "$current_iter")
+        promise=$(extract_promise_from_iteration_artifacts "$current_iter")
         if [ -n "$promise" ]; then
           echo "Promise: $promise"
           echo
@@ -1207,11 +1264,12 @@ iterate_once() {
   # shellcheck disable=SC2064
   trap "rm -f '$running_file'" EXIT
 
-  local ts iter_num log_file
+  local ts iter_num log_file final_file
   ts=$(date +%s)
   # shellcheck disable=SC2012
   iter_num=$(ls "$logs_dir"/iter-* 2>/dev/null | wc -l | awk '{print $1+1}')
   log_file="$logs_dir/iter-${iter_num}-${ts}.jsonl"
+  final_file=$(iteration_final_message_file "$log_file")
 
   # Manifest: announce what this iteration is about to do before the agent streams.
   printf '\n── ralph iteration %s ─────────────────────────────\n' "$iter_num"
@@ -1248,8 +1306,14 @@ iterate_once() {
     return 1
   fi
 
-  # Detect promise from the JSONL file
-  result=$(jq -r 'select(.type == "result").result // empty' < "$log_file")
+  if ! write_final_message_artifact "$RESOLVED_AGENT_CLI" "$log_file" "$final_file"; then
+    echo "ralph: failed to write final assistant message artifact" >&2
+    return 1
+  fi
+
+  # Detect promise from the final-message artifact (legacy JSONL fallback for
+  # older logs stays inside the helper).
+  result=$(extract_promise_from_iteration_artifacts "$log_file")
   if [ -z "$result" ]; then
     return 0
   fi
