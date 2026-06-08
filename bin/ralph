@@ -587,12 +587,48 @@ extract_claude_final_message_from_jsonl() {
   ' < "$log_file"
 }
 
+stream_claude_jsonl_pretty() {
+  jq -r '
+    if .type == "assistant" then
+      .message.content[]? | (
+        if .type == "text" then .text
+        elif .type == "tool_use" then "→ " + .name + " " + (((.input // {}) | tostring)[0:140])
+        else empty end)
+    elif .type == "result" then "● " + (.subtype // "result")
+    else empty end
+    | select(. != "") | gsub("\n"; "\r\n") | . + "\r\n\n"'
+}
+
+stream_codex_jsonl_pretty() {
+  jq -r '
+    if .type == "item.completed" and .item.type == "agent_message" then
+      .item.text // empty
+    elif .type == "item.started" and .item.type == "command_execution" then
+      "→ " + (.item.command // "command")
+    elif .type == "item.completed" and .item.type == "command_execution" then
+      "● command exit " + ((.item.exit_code // .item.exitCode // 0) | tostring)
+    elif .type == "item.completed" and .item.type == "web_search" then
+      "→ web_search"
+    elif .type == "item.completed" and .item.type == "mcp_tool_call" then
+      "→ mcp " + (.item.server // "") + "/" + (.item.tool // "")
+    elif .type == "item.completed" and .item.type == "plan_update" then
+      "→ plan updated"
+    else empty end
+    | select(. != "") | gsub("\n"; "\r\n") | . + "\r\n\n"'
+}
+
 write_final_message_artifact() {
   local agent_cli="$1" log_file="$2" final_file="$3"
 
   case "$agent_cli" in
     claude)
       extract_claude_final_message_from_jsonl "$log_file" > "$final_file"
+      ;;
+    codex)
+      [ -f "$final_file" ] || {
+        echo "ralph: codex did not write final message artifact: $final_file" >&2
+        return 1
+      }
       ;;
     *)
       echo "ralph: no final-message writer for AGENT_CLI=$agent_cli" >&2
@@ -1242,7 +1278,7 @@ iterate_once() {
     return 0
   fi
 
-  # Non-interactive: use stream-json format, write JSONL logs, detect promise from file
+  # Non-interactive: write JSONL logs, detect promise from the final-message artifact
   command -v jq >/dev/null 2>&1 || { echo "ralph: 'jq' not found" >&2; return 1; }
 
   local scope
@@ -1281,26 +1317,30 @@ iterate_once() {
   printf '  log:    %s\n' "$log_file"
   printf '────────────────────────────────────────────────────\n\n'
 
-  if [ "$RESOLVED_AGENT_CLI" != "claude" ]; then
-    echo "ralph: AGENT_CLI=$RESOLVED_AGENT_CLI is configured, but non-interactive execution is not implemented for this adapter yet" >&2
-    return 1
-  fi
-
-  # Stream live text output to terminal while writing raw JSONL to file
-  # shellcheck disable=SC2086
-  $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS --output-format stream-json --verbose --effort low --model "$RESOLVED_MODEL" --dangerously-skip-permissions -p "$prompt" 2>&1 \
-    | grep --line-buffered '^{' \
-    | tee "$log_file" \
-    | jq -r '
-        if .type == "assistant" then
-          .message.content[]? | (
-            if .type == "text" then .text
-            elif .type == "tool_use" then "→ " + .name + " " + (((.input // {}) | tostring)[0:140])
-            else empty end)
-        elif .type == "result" then "● " + (.subtype // "result")
-        else empty end
-        | select(. != "") | gsub("\n"; "\r\n") | . + "\r\n\n"'
-  rc=${PIPESTATUS[0]}
+  case "$RESOLVED_AGENT_CLI" in
+    claude)
+      # Stream live text output to terminal while writing raw JSONL to file.
+      # shellcheck disable=SC2086
+      $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS --output-format stream-json --verbose --effort low --model "$RESOLVED_MODEL" --dangerously-skip-permissions -p "$prompt" 2>&1 \
+        | grep --line-buffered '^{' \
+        | tee "$log_file" \
+        | stream_claude_jsonl_pretty
+      rc=${PIPESTATUS[0]}
+      ;;
+    codex)
+      # Use Codex native stdin-prompt mode (`exec -`), JSONL stdout, and native
+      # final-message output file so the artifact contract stays adapter-agnostic.
+      # shellcheck disable=SC2086
+      printf '%s' "$prompt" | $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS exec --json --output-last-message "$final_file" --sandbox danger-full-access --ask-for-approval never --model "$RESOLVED_MODEL" - \
+        | tee "$log_file" \
+        | stream_codex_jsonl_pretty
+      rc=${PIPESTATUS[1]}
+      ;;
+    *)
+      echo "ralph: AGENT_CLI=$RESOLVED_AGENT_CLI is configured, but non-interactive execution is not implemented for this adapter yet" >&2
+      return 1
+      ;;
+  esac
   if [ "$rc" -ne 0 ]; then
     echo "ralph: $RESOLVED_AGENT_CLI invocation failed (rc=$rc)" >&2
     return 1
@@ -1318,12 +1358,12 @@ iterate_once() {
     return 0
   fi
 
-  if [[ "$result" == *"<promise>COMPLETE</promise>"* ]]; then
+  if [ "$result" = "COMPLETE" ]; then
     [ "$BACKEND" = "github" ] && close_milestone_gh "$milestone"
     echo "ralph: scope '$scope' complete."
     return 20
   fi
-  if [[ "$result" == *"<promise>BLOCKED</promise>"* ]]; then
+  if [ "$result" = "BLOCKED" ]; then
     echo "ralph: scope '$scope' blocked. Human needed." >&2
     return 21
   fi

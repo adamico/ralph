@@ -637,6 +637,152 @@ EOF
 
 test_promise_detection_prefers_final_message_and_legacy_fallback
 
+# --- Codex adapter contract tests (issue #46) ---
+test_codex_adapter_uses_stdin_jsonl_and_final_artifact() {
+  local test_dir
+  test_dir=$(mktemp -d)
+  cd "$test_dir" || exit 1
+
+  git init >/dev/null 2>&1
+  git config user.email "test@example.com" >/dev/null 2>&1
+  git config user.name "Test User" >/dev/null 2>&1
+  git checkout -b feature/codex-test >/dev/null 2>&1
+
+  mkdir -p .scratch/demo/issues bin
+  cat > .scratch/ACTIVE <<'EOF'
+demo
+EOF
+  cat > .scratch/demo/PRD.md <<'EOF'
+# Demo PRD
+EOF
+  cat > .scratch/demo/issues/01-codex.md <<'EOF'
+Status: ready
+---
+Implement Codex adapter.
+EOF
+  cat > bin/mock-codex <<'MOCK_CODEX'
+#!/usr/bin/env bash
+set -eu
+
+printf '%s\n' "$@" > codex-args.txt
+cat > codex-stdin.txt
+
+output_file=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--output-last-message" ] || [ "$prev" = "-o" ]; then
+    output_file="$arg"
+    break
+  fi
+  prev="$arg"
+done
+
+[ -n "$output_file" ] || exit 91
+mkdir -p "$(dirname "$output_file")"
+cat > "$output_file" <<'EOF'
+Codex final answer
+<promise>COMPLETE</promise>
+EOF
+
+cat <<'EOF'
+{"type":"thread.started","thread_id":"thread-1"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item-1","type":"command_execution","command":"bash -lc echo hi","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item-1","type":"command_execution","command":"bash -lc echo hi","status":"completed","exit_code":0}}
+{"type":"item.completed","item":{"id":"item-2","type":"agent_message","text":"Planning...\nCodex final answer"}}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}
+EOF
+MOCK_CODEX
+  chmod +x bin/mock-codex
+
+  git add . >/dev/null 2>&1
+  git commit -m "fixture" >/dev/null 2>&1
+
+  # shellcheck disable=SC2034
+  BACKEND="fs"
+  # shellcheck disable=SC2034
+  MARKER_FILE=".scratch/ACTIVE"
+  # shellcheck disable=SC2034
+  AGENT_CLI="codex"
+  # shellcheck disable=SC2034
+  AGENT_CMD="./bin/mock-codex"
+  # shellcheck disable=SC2034
+  AGENT_ARGS="--profile ci"
+  # shellcheck disable=SC2034
+  MODEL=""
+  # shellcheck disable=SC2034
+  MODEL_CLASS="low"
+
+  local output rc log_file final_file args_dump stdin_dump
+  output=$(iterate_once 2>&1)
+  rc=$?
+
+  log_file=$(find .ralph-logs/.scratch/demo -type f -name 'iter-*.jsonl' | sort | head -1)
+  final_file=$(iteration_final_message_file "$log_file")
+  args_dump=$(cat codex-args.txt)
+  stdin_dump=$(cat codex-stdin.txt)
+
+  assert_eq "codex_adapter: iterate_once returns COMPLETE" "20" "$rc"
+  if [ -f "$log_file" ] && grep -q '"type":"thread.started"' "$log_file"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("codex_adapter: jsonl log file missing or wrong")
+    echo "FAIL: codex_adapter: jsonl log file missing or wrong"
+  fi
+
+  if [ -f "$final_file" ] && grep -q '<promise>COMPLETE</promise>' "$final_file"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("codex_adapter: final artifact missing or wrong")
+    echo "FAIL: codex_adapter: final artifact missing or wrong"
+  fi
+
+  assert_eq "codex_adapter: promise comes from final artifact" "COMPLETE" "$(extract_promise_from_iteration_artifacts "$log_file")"
+  if printf '%s\n' "$args_dump" | grep -qx -- "exec" \
+    && printf '%s\n' "$args_dump" | grep -qx -- "--json" \
+    && printf '%s\n' "$args_dump" | grep -qx -- "--output-last-message" \
+    && printf '%s\n' "$args_dump" | grep -qx -- "--sandbox" \
+    && printf '%s\n' "$args_dump" | grep -qx -- "danger-full-access" \
+    && printf '%s\n' "$args_dump" | grep -qx -- "--ask-for-approval" \
+    && printf '%s\n' "$args_dump" | grep -qx -- "never" \
+    && printf '%s\n' "$args_dump" | grep -qx -- "--model" \
+    && printf '%s\n' "$args_dump" | grep -qx -- "gpt-5.4" \
+    && [ "$(tail -1 codex-args.txt)" = "-" ]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("codex_adapter: expected codex exec arguments missing")
+    echo "FAIL: codex_adapter: expected codex exec arguments missing"
+    echo "$args_dump"
+  fi
+
+  if printf '%s' "$stdin_dump" | grep -q "Follow these priority rules" \
+    && printf '%s' "$stdin_dump" | grep -q "@.scratch/demo/PRD.md @.scratch/demo/issues @progress.txt"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("codex_adapter: prompt not passed on stdin")
+    echo "FAIL: codex_adapter: prompt not passed on stdin"
+  fi
+
+  if printf '%s' "$output" | grep -q "Planning..." \
+    && printf '%s' "$output" | grep -q "command exit 0"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("codex_adapter: readable progress not streamed")
+    echo "FAIL: codex_adapter: readable progress not streamed"
+    echo "$output"
+  fi
+
+  cd / || true
+  rm -rf "$test_dir"
+}
+
+test_codex_adapter_uses_stdin_jsonl_and_final_artifact
+
 # --- Inspect list mode test (issue #16) ---
 test_inspect_list() {
   local test_dir
