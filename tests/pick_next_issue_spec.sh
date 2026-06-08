@@ -783,6 +783,221 @@ MOCK_CODEX
 
 test_codex_adapter_uses_stdin_jsonl_and_final_artifact
 
+# --- Pi adapter contract tests (issue #47) ---
+test_pi_adapter_uses_json_mode_and_canonical_final_artifact() {
+  local test_dir
+  test_dir=$(mktemp -d)
+  cd "$test_dir" || exit 1
+
+  git init >/dev/null 2>&1
+  git config user.email "test@example.com" >/dev/null 2>&1
+  git config user.name "Test User" >/dev/null 2>&1
+  git checkout -b feature/pi-test >/dev/null 2>&1
+
+  mkdir -p .scratch/demo/issues bin
+  cat > .scratch/ACTIVE <<'EOF'
+demo
+EOF
+  cat > .scratch/demo/PRD.md <<'EOF'
+# Demo PRD
+EOF
+  cat > .scratch/demo/issues/01-pi.md <<'EOF'
+Status: ready
+---
+Implement Pi adapter.
+EOF
+  cat > bin/mock-pi <<'MOCK_PI'
+#!/usr/bin/env bash
+set -eu
+
+printf '%s\n' "$@" > pi-args.txt
+
+cat <<'EOF'
+{"type":"session","version":3,"id":"sess-1","timestamp":"2026-01-01T00:00:00Z","cwd":"/tmp/demo"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"assistant","content":[]}}
+{"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"Planning...\nDraft output"}]},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Planning...\nDraft output","partial":{"role":"assistant","content":[{"type":"text","text":"Planning...\nDraft output"}]}}}
+{"type":"tool_execution_start","toolCallId":"tool-1","toolName":"bash","args":{"command":"echo hi"}}
+{"type":"tool_execution_end","toolCallId":"tool-1","toolName":"bash","result":{"ok":true},"isError":false}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Canonical Pi final answer"},{"type":"text","text":"<promise>COMPLETE</promise>"}]}}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"Canonical Pi final answer"},{"type":"text","text":"<promise>COMPLETE</promise>"}]},"toolResults":[]}
+{"type":"agent_end","messages":[]}
+EOF
+MOCK_PI
+  chmod +x bin/mock-pi
+
+  git add . >/dev/null 2>&1
+  git commit -m "fixture" >/dev/null 2>&1
+
+  # shellcheck disable=SC2034
+  BACKEND="fs"
+  # shellcheck disable=SC2034
+  MARKER_FILE=".scratch/ACTIVE"
+  # shellcheck disable=SC2034
+  AGENT_CLI="pi"
+  # shellcheck disable=SC2034
+  AGENT_CMD="./bin/mock-pi"
+  # shellcheck disable=SC2034
+  AGENT_ARGS="--profile ci"
+  # shellcheck disable=SC2034
+  MODEL="openai/gpt-5"
+  # shellcheck disable=SC2034
+  MODEL_CLASS="low"
+
+  local output rc log_file final_file args_dump
+  output=$(iterate_once 2>&1)
+  rc=$?
+
+  log_file=$(find .ralph-logs/.scratch/demo -type f -name 'iter-*.jsonl' | sort | head -1)
+  final_file=$(iteration_final_message_file "$log_file")
+  args_dump=$(cat pi-args.txt)
+
+  assert_eq "pi_adapter: iterate_once returns COMPLETE" "20" "$rc"
+  if [ -f "$log_file" ] && grep -q '"type":"session"' "$log_file"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("pi_adapter: jsonl log file missing or wrong")
+    echo "FAIL: pi_adapter: jsonl log file missing or wrong"
+  fi
+
+  if [ -f "$final_file" ] && grep -q 'Canonical Pi final answer' "$final_file" \
+    && ! grep -q 'Draft output' "$final_file"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("pi_adapter: canonical final artifact missing or wrong")
+    echo "FAIL: pi_adapter: canonical final artifact missing or wrong"
+  fi
+
+  assert_eq "pi_adapter: promise comes from final artifact" "COMPLETE" "$(extract_promise_from_iteration_artifacts "$log_file")"
+  if printf '%s\n' "$args_dump" | grep -qx -- "--mode" \
+    && printf '%s\n' "$args_dump" | grep -qx -- "json" \
+    && printf '%s\n' "$args_dump" | grep -qx -- "--approve" \
+    && printf '%s\n' "$args_dump" | grep -qx -- "--no-session" \
+    && printf '%s\n' "$args_dump" | grep -qx -- "--model" \
+    && printf '%s\n' "$args_dump" | grep -qx -- "openai/gpt-5"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("pi_adapter: expected pi exec arguments missing")
+    echo "FAIL: pi_adapter: expected pi exec arguments missing"
+    echo "$args_dump"
+  fi
+
+  if printf '%s\n' "$output" | grep -q "Planning..." \
+    && printf '%s\n' "$output" | grep -q "bash done"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("pi_adapter: readable progress not streamed")
+    echo "FAIL: pi_adapter: readable progress not streamed"
+    echo "$output"
+  fi
+
+  cd / || true
+  rm -rf "$test_dir"
+}
+
+test_pi_adapter_omits_model_and_falls_back_to_text_deltas() {
+  local test_dir
+  test_dir=$(mktemp -d)
+  cd "$test_dir" || exit 1
+
+  git init >/dev/null 2>&1
+  git config user.email "test@example.com" >/dev/null 2>&1
+  git config user.name "Test User" >/dev/null 2>&1
+  git checkout -b feature/pi-fallback-test >/dev/null 2>&1
+
+  mkdir -p .scratch/demo/issues bin
+  cat > .scratch/ACTIVE <<'EOF'
+demo
+EOF
+  cat > .scratch/demo/PRD.md <<'EOF'
+# Demo PRD
+EOF
+  cat > .scratch/demo/issues/01-pi-fallback.md <<'EOF'
+Status: ready
+---
+Implement Pi adapter fallback.
+EOF
+  cat > bin/mock-pi-fallback <<'MOCK_PI'
+#!/usr/bin/env bash
+set -eu
+
+printf '%s\n' "$@" > pi-fallback-args.txt
+
+cat <<'EOF'
+{"type":"session","version":3,"id":"sess-2","timestamp":"2026-01-01T00:00:00Z","cwd":"/tmp/demo"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"assistant","content":[]}}
+{"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"Fallback Pi final"},{"type":"text","text":"\n<promise>BLOCKED</promise>"}]},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Fallback Pi final","partial":{"role":"assistant","content":[{"type":"text","text":"Fallback Pi final"}]}}}
+{"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"Fallback Pi final"},{"type":"text","text":"\n<promise>BLOCKED</promise>"}]},"assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"\n<promise>BLOCKED</promise>","partial":{"role":"assistant","content":[{"type":"text","text":"Fallback Pi final"},{"type":"text","text":"\n<promise>BLOCKED</promise>"}]}}}
+{"type":"tool_execution_start","toolCallId":"tool-1","toolName":"read","args":{"path":"README.md"}}
+{"type":"tool_execution_end","toolCallId":"tool-1","toolName":"read","result":{"ok":true},"isError":false}
+{"type":"agent_end","messages":[]}
+EOF
+MOCK_PI
+  chmod +x bin/mock-pi-fallback
+
+  git add . >/dev/null 2>&1
+  git commit -m "fixture" >/dev/null 2>&1
+
+  # shellcheck disable=SC2034
+  BACKEND="fs"
+  # shellcheck disable=SC2034
+  MARKER_FILE=".scratch/ACTIVE"
+  # shellcheck disable=SC2034
+  AGENT_CLI="pi"
+  # shellcheck disable=SC2034
+  AGENT_CMD="./bin/mock-pi-fallback"
+  # shellcheck disable=SC2034
+  AGENT_ARGS=""
+  # shellcheck disable=SC2034
+  MODEL=""
+  # shellcheck disable=SC2034
+  MODEL_CLASS="low"
+
+  local output rc log_file final_file args_dump final_text
+  output=$(iterate_once 2>&1)
+  rc=$?
+
+  log_file=$(find .ralph-logs/.scratch/demo -type f -name 'iter-*.jsonl' | sort | head -1)
+  final_file=$(iteration_final_message_file "$log_file")
+  args_dump=$(cat pi-fallback-args.txt)
+  final_text=$(cat "$final_file")
+
+  assert_eq "pi_fallback: iterate_once returns BLOCKED" "21" "$rc"
+  assert_eq "pi_fallback: reconstructed final text" $'Fallback Pi final\n<promise>BLOCKED</promise>' "$final_text"
+  assert_eq "pi_fallback: promise comes from reconstructed artifact" "BLOCKED" "$(extract_promise_from_iteration_artifacts "$log_file")"
+  if ! printf '%s\n' "$args_dump" | grep -qx -- "--model"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("pi_fallback: unexpected --model flag")
+    echo "FAIL: pi_fallback: unexpected --model flag"
+    echo "$args_dump"
+  fi
+
+  if printf '%s\n' "$output" | grep -q "Fallback Pi final" \
+    && printf '%s\n' "$output" | grep -q "read done"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("pi_fallback: readable progress not streamed")
+    echo "FAIL: pi_fallback: readable progress not streamed"
+    echo "$output"
+  fi
+
+  cd / || true
+  rm -rf "$test_dir"
+}
+
+test_pi_adapter_uses_json_mode_and_canonical_final_artifact
+test_pi_adapter_omits_model_and_falls_back_to_text_deltas
+
 # --- Inspect list mode test (issue #16) ---
 test_inspect_list() {
   local test_dir

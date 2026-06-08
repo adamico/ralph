@@ -617,6 +617,92 @@ stream_codex_jsonl_pretty() {
     | select(. != "") | gsub("\n"; "\r\n") | . + "\r\n\n"'
 }
 
+stream_pi_jsonl_pretty() {
+  jq -r '
+    if .type == "message_update" and .assistantMessageEvent.type == "text_delta" then
+      .assistantMessageEvent.delta // empty
+    elif .type == "tool_execution_start" then
+      "→ " + (.toolName // "tool") + " " + (((.args // {}) | tostring)[0:140])
+    elif .type == "tool_execution_end" then
+      if .isError then
+        "● " + (.toolName // "tool") + " error"
+      else
+        "● " + (.toolName // "tool") + " done"
+      end
+    elif .type == "auto_retry_start" then
+      "→ auto-retry " + ((.attempt // 0) | tostring) + "/" + ((.maxAttempts // 0) | tostring)
+    elif .type == "compaction_start" then
+      "→ compaction " + (.reason // "manual")
+    else empty end
+    | select(. != "") | gsub("\n"; "\r\n") | . + "\r\n\n"'
+}
+
+extract_pi_final_message_from_jsonl() {
+  # Prefer canonical final assistant message events; fall back to reconstructing
+  # the last assistant text stream from text_delta events when those are absent.
+  local log_file="$1"
+  jq -rs '
+    def text_from_content:
+      [(.content // [])[] | select(.type == "text") | .text] | join("\n");
+    def canonical_text($event):
+      if $event.type == "message_end" then
+        ($event.message // {})
+      elif $event.type == "turn_end" then
+        ($event.message // {})
+      elif $event.type == "message_update" and (($event.assistantMessageEvent.type // "") == "done") then
+        ($event.assistantMessageEvent.message // {})
+      else
+        {}
+      end
+      | select((.role // "") == "assistant")
+      | text_from_content
+      | select(length > 0);
+    def delta_text($segments):
+      $segments
+      | sort_by(.idx)
+      | map(.text)
+      | join("");
+
+    reduce .[] as $event (
+      {canonical: [], current: {active: false, segments: []}, fallback: []};
+      if $event.type == "message_start" then
+        if (($event.message.role // "") == "assistant") then
+          .current = {active: true, segments: []}
+        else
+          .current = {active: false, segments: []}
+        end
+      elif $event.type == "message_update" and .current.active and (($event.assistantMessageEvent.type // "") == "text_delta") then
+        .current.segments += [{
+          idx: ($event.assistantMessageEvent.contentIndex // 0),
+          text: ($event.assistantMessageEvent.delta // "")
+        }]
+      elif $event.type == "message_end" then
+        if .current.active then
+          .fallback += [delta_text(.current.segments)]
+        else
+          .
+        end
+        | .current = {active: false, segments: []}
+        | .canonical += [canonical_text($event)]
+      elif $event.type == "agent_end" then
+        if .current.active then
+          .fallback += [delta_text(.current.segments)]
+        else
+          .
+        end
+        | .current = {active: false, segments: []}
+      elif $event.type == "turn_end" then
+        .canonical += [canonical_text($event)]
+      elif $event.type == "message_update" and (($event.assistantMessageEvent.type // "") == "done") then
+        .canonical += [canonical_text($event)]
+      else
+        .
+      end
+    )
+    | ((.canonical | map(select(length > 0)) | last) // (.fallback | map(select(length > 0)) | last) // empty)
+  ' < "$log_file"
+}
+
 write_final_message_artifact() {
   local agent_cli="$1" log_file="$2" final_file="$3"
 
@@ -629,6 +715,9 @@ write_final_message_artifact() {
         echo "ralph: codex did not write final message artifact: $final_file" >&2
         return 1
       }
+      ;;
+    pi)
+      extract_pi_final_message_from_jsonl "$log_file" > "$final_file"
       ;;
     *)
       echo "ralph: no final-message writer for AGENT_CLI=$agent_cli" >&2
@@ -1335,6 +1424,22 @@ iterate_once() {
         | tee "$log_file" \
         | stream_codex_jsonl_pretty
       rc=${PIPESTATUS[1]}
+      ;;
+    pi)
+      # Pi's documented JSON mode streams session events to stdout. Keep project
+      # inputs enabled in non-interactive mode and avoid persisting provider sessions.
+      if [ -n "$RESOLVED_MODEL" ]; then
+        # shellcheck disable=SC2086
+        $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS --mode json --approve --no-session --model "$RESOLVED_MODEL" "$prompt" 2>&1 \
+          | tee "$log_file" \
+          | stream_pi_jsonl_pretty
+      else
+        # shellcheck disable=SC2086
+        $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS --mode json --approve --no-session "$prompt" 2>&1 \
+          | tee "$log_file" \
+          | stream_pi_jsonl_pretty
+      fi
+      rc=${PIPESTATUS[0]}
       ;;
     *)
       echo "ralph: AGENT_CLI=$RESOLVED_AGENT_CLI is configured, but non-interactive execution is not implemented for this adapter yet" >&2
