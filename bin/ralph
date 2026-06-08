@@ -493,7 +493,9 @@ cmd_status() {
     sbx_out=$(sbx exec "$SANDBOX_NAME" -- ps -eo pid,etime,time,comm,args </dev/null 2>/dev/null)
     # Force CR-on-LF + cooked mode back on. sbx exec leaves the tty
     # raw (no onlcr) regardless of what zsh had set before.
-    [ -t 1 ] && stty sane 2>/dev/null || true
+    if [ -t 1 ]; then
+      stty sane 2>/dev/null || true
+    fi
   fi
 
   echo "--- host ralph processes ---"
