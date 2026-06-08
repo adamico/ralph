@@ -100,7 +100,7 @@ assert_rc "codex config rc" 0 "$RUN_RC"
 assert_eq "codex default cmd" "codex" "$RESOLVED_AGENT_CMD"
 run_capture resolve_model_config "$RESOLVED_AGENT_CLI"
 assert_rc "codex model rc" 0 "$RUN_RC"
-assert_eq "codex low model" "gpt-5.4" "$RESOLVED_MODEL"
+assert_eq "codex low model" "gpt-5.4-mini" "$RESOLVED_MODEL"
 
 reset_agent_cfg
 AGENT_CLI="pi"

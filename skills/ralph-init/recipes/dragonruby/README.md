@@ -37,7 +37,7 @@ AGENT_CLI="codex"                     # claude | codex | pi
 AGENT_CMD="sbx run <repo>-dragonruby -- codex"
 AGENT_ARGS=""
 MODEL_CLASS="low"
-# MODEL="gpt-5.4"
+# MODEL="gpt-5.4-mini"
 TEST_CMD="DR_TEST_SOURCE=remote ./run_tests"
 LINT_CMD="bundle exec rubocop"
 ```

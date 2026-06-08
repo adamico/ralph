@@ -445,9 +445,9 @@ resolve_model_config() {
       RESOLVED_MODEL_DISPLAY="sonnet (MODEL_CLASS=$model_class default)"
       ;;
     codex)
-      RESOLVED_MODEL="gpt-5.4"
+      RESOLVED_MODEL="gpt-5.4-mini"
       RESOLVED_MODEL_SOURCE="model-class:$model_class"
-      RESOLVED_MODEL_DISPLAY="gpt-5.4 (MODEL_CLASS=$model_class default)"
+      RESOLVED_MODEL_DISPLAY="gpt-5.4-mini (MODEL_CLASS=$model_class default)"
       ;;
     pi)
       RESOLVED_MODEL=""
@@ -1419,7 +1419,7 @@ iterate_once() {
       # Use Codex native stdin-prompt mode (`exec -`), JSONL stdout, and native
       # final-message output file so the artifact contract stays adapter-agnostic.
       # shellcheck disable=SC2086
-      printf '%s' "$prompt" | $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS exec --json --output-last-message "$final_file" --ask-for-approval never --model "$RESOLVED_MODEL" - \
+      printf '%s' "$prompt" | $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS exec --json --output-last-message "$final_file" --dangerously-bypass-approvals-and-sandbox --model "$RESOLVED_MODEL" - \
         | tee "$log_file" \
         | stream_codex_jsonl_pretty
       rc=${PIPESTATUS[1]}

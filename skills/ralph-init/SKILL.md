@@ -484,7 +484,7 @@ AGENT_CMD="sbx run my-project -- codex" # or just "codex"
 AGENT_ARGS=""                          # optional adapter args
 # SANDBOX_NAME="my-project"            # optional; auto-derived from AGENT_CMD when it contains 'sbx run'
 MODEL_CLASS="low"                      # Model Class for adapter defaults
-# MODEL="gpt-5.4"                      # optional explicit model override
+# MODEL="gpt-5.4-mini"                 # optional explicit model override
 TEST_CMD="npm test"                     # command that exits 0 on pass
 LINT_CMD=":"                            # command that exits 0 on pass, or : for no-op
 ```

@@ -86,7 +86,7 @@ A ralph engagement uses one configured **Agent CLI**. `AGENT_CLI` selects the
 adapter (`claude`, `codex`, or `pi`), `AGENT_CMD` supplies the executable or
 wrapper, and `AGENT_ARGS` carries optional extra adapter arguments.
 `MODEL_CLASS=low` selects adapter defaults (`claude` -> `sonnet`, `codex` ->
-`gpt-5.4`); set `MODEL` to override explicitly. Pi relies on external provider
+`gpt-5.4-mini`); set `MODEL` to override explicitly. Pi relies on external provider
 configuration, so ralph omits `--model` unless `MODEL` is set.
 
 Sandboxing is ralph-level: wrap the whole Agent CLI in `sbx` via `AGENT_CMD`,

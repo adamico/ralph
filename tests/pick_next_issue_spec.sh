@@ -220,7 +220,7 @@ test_agent_cli_new_config() {
 
   resolve_model_config "$RESOLVED_AGENT_CLI" >/dev/null 2>&1; rc=$?
   assert_eq "agent_config: model config resolves" "0" "$rc"
-  assert_eq "agent_config: codex low -> gpt-5.4" "gpt-5.4" "$RESOLVED_MODEL"
+  assert_eq "agent_config: codex low -> gpt-5.4-mini" "gpt-5.4-mini" "$RESOLVED_MODEL"
   assert_eq "agent_config: codex low source" "model-class:low" "$RESOLVED_MODEL_SOURCE"
 }
 
@@ -333,11 +333,11 @@ test_agent_cli_rejects_unsupported_names() {
 test_agent_model_manifest_values() {
   reset_agent_resolution_state
   RESOLVED_AGENT_CLI="codex"
-  RESOLVED_MODEL="gpt-5.4"
+  RESOLVED_MODEL="gpt-5.4-mini"
   RESOLVED_MODEL_SOURCE="model-class:low"
   # shellcheck disable=SC2034
-  RESOLVED_MODEL_DISPLAY="gpt-5.4 (MODEL_CLASS=low default)"
-  assert_eq "manifest_model: codex default text" "gpt-5.4 (MODEL_CLASS=low default)" "$(agent_model_manifest_value)"
+  RESOLVED_MODEL_DISPLAY="gpt-5.4-mini (MODEL_CLASS=low default)"
+  assert_eq "manifest_model: codex default text" "gpt-5.4-mini (MODEL_CLASS=low default)" "$(agent_model_manifest_value)"
 
   RESOLVED_AGENT_CLI="pi"
   RESOLVED_MODEL=""
@@ -744,10 +744,9 @@ MOCK_CODEX
     && printf '%s\n' "$args_dump" | grep -qx -- "--json" \
     && printf '%s\n' "$args_dump" | grep -qx -- "--output-last-message" \
     && ! printf '%s\n' "$args_dump" | grep -qx -- "--sandbox" \
-    && printf '%s\n' "$args_dump" | grep -qx -- "--ask-for-approval" \
-    && printf '%s\n' "$args_dump" | grep -qx -- "never" \
+    && printf '%s\n' "$args_dump" | grep -qx -- "--dangerously-bypass-approvals-and-sandbox" \
     && printf '%s\n' "$args_dump" | grep -qx -- "--model" \
-    && printf '%s\n' "$args_dump" | grep -qx -- "gpt-5.4" \
+    && printf '%s\n' "$args_dump" | grep -qx -- "gpt-5.4-mini" \
     && [ "$(tail -1 codex-args.txt)" = "-" ]; then
     PASS=$((PASS+1))
   else

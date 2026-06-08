@@ -35,7 +35,7 @@ AGENT_CLI="codex"
 AGENT_CMD="sbx run <repo>-littlejs -- codex"
 AGENT_ARGS=""
 MODEL_CLASS="low"
-# MODEL="gpt-5.4"
+# MODEL="gpt-5.4-mini"
 TEST_CMD="<ENGINE>_TEST_SOURCE=remote <abs-path>/run_tests test"
 LINT_CMD="<ENGINE>_TEST_SOURCE=remote <abs-path>/run_tests lint"
 ```
