@@ -82,11 +82,12 @@ queue. Legacy `CLAUDE_CMD` is compatibility-only for the Claude adapter.
    - Lint: `npm install --save-dev eslint @eslint/js` + generate `eslint.config.js` → `LINT_CMD="npx eslint ."`
    - Ask user: "Install Vitest + ESLint now? (recommended)" before running npm install.
 
-3. **Ask: Docker sandbox?** — after detecting TEST_CMD/LINT_CMD, ask:
+3. **Choose Agent CLI + ask: Docker sandbox?** — after detecting TEST_CMD/LINT_CMD, ask which Agent CLI to configure (`claude`, `codex`, or `pi`; default `codex` for new setups unless the user prefers otherwise), then ask:
    > "Run AFK sessions in a Docker sandbox? (isolated container; host machine not used for tests/lint)"
 
-   - If **no** → skip to step 4 with `AGENT_CLI="claude"` and `AGENT_CMD="claude"`
+   - If **no** → skip to step 4 with `AGENT_CLI="<agent-cli>"`, `AGENT_CMD="<agent-cli>"`, and `AGENT_ARGS=""`
    - If **yes** → follow [Docker Sandbox Setup](#docker-sandbox-setup) below, then return to step 4
+   - Never emit `CLAUDE_CMD` in newly generated configs; mention it only as a legacy compatibility alias for existing Claude configs.
 
 4. **Show proposed config** — print the full `.ralph.conf` content to user before writing.
 
@@ -179,11 +180,11 @@ Shared header for every port config:
 # Milestone is a runtime arg to 'ralph once', not stored in config.
 
 BACKEND="github"
-AGENT_CLI="claude"
-AGENT_CMD="claude"
+AGENT_CLI="<agent-cli>"          # claude | codex | pi
+AGENT_CMD="<agent-cli>"
 AGENT_ARGS=""
 MODEL_CLASS="low"
-# MODEL="sonnet"
+# MODEL="<optional-explicit-model>"
 ```
 
 Then the tier-specific tail:
@@ -193,7 +194,7 @@ Then the tier-specific tail:
 ```bash
 # Host fallback: no sandbox yet. AGENT_CMD runs on host; TEST_CMD is a stub.
 # TODO: implement code-judo Docker recipe (see dragonruby ADR-0016/ADR-0022).
-AGENT_CMD="claude"
+AGENT_CMD="<agent-cli>"
 TEST_CMD=":"
 LINT_CMD=":"
 ```
@@ -246,7 +247,11 @@ exit 0
    # sandbox + clean linux `npm ci`. COMMIT AND PUSH before tests reflect changes
    # (ADR-0022: "WIP must be pushed to be testable"). Absolute path: agent cwd in
    # the sandbox is not the mount.
-   AGENT_CMD="sbx run <repo>-littlejs -- claude"
+   AGENT_CLI="<agent-cli>"
+   AGENT_CMD="sbx run <repo>-littlejs -- <agent-cli>"
+   AGENT_ARGS=""
+   MODEL_CLASS="low"
+   # MODEL="<optional-explicit-model>"
    TEST_CMD="<ENGINE>_TEST_SOURCE=remote <abs-path>/run_tests test"
    LINT_CMD="<ENGINE>_TEST_SOURCE=remote <abs-path>/run_tests lint"
    ```
@@ -308,8 +313,9 @@ anchor table in `recipes/dragonruby/PATH-REWRITE-CHECKLIST.md`.
 
 | Anchor                                              | Rewrite                  |
 |-----------------------------------------------------|--------------------------|
-| `SANDBOX_NAME="${SANDBOX_NAME:-claude-locomotion}"` | `…:-<repo>-dragonruby}`  |
-| `TEMPLATE_TAG="${TEMPLATE_TAG:-locomotion-ruby}"`   | `…:-<repo>-dragonruby}`  |
+| `SANDBOX_NAME="${SANDBOX_NAME:-claude-locomotion}"` (legacy locomotion) or `SANDBOX_NAME="${SANDBOX_NAME:-dragonruby}"` (bundled) | `…:-<repo>-dragonruby}`  |
+| `TEMPLATE_TAG="${TEMPLATE_TAG:-locomotion-ruby}"` (legacy locomotion) or `TEMPLATE_TAG="${TEMPLATE_TAG:-dragonruby}"` (bundled) | `…:-<repo>-dragonruby}`  |
+| `AGENT_CLI="${AGENT_CLI:-codex}"` | keep Codex default, or rewrite only if the user explicitly chose another Agent CLI |
 
 `dr-update-sandbox`: no rewrites (paths are sandbox-internal or
 port-relative).
@@ -330,7 +336,11 @@ rewrite that broke it.
 **6. Emit config** — `<port>/.ralph.conf`:
 
 ```bash
-AGENT_CMD="sbx run <repo>-dragonruby -- claude"
+AGENT_CLI="<agent-cli>"
+AGENT_CMD="sbx run <repo>-dragonruby -- <agent-cli>"
+AGENT_ARGS=""
+MODEL_CLASS="low"
+# MODEL="<optional-explicit-model>"
 TEST_CMD="DR_TEST_SOURCE=remote ./run_tests"
 LINT_CMD="bundle exec rubocop"
 ```
@@ -346,11 +356,11 @@ orchestration) that aren't tied to one engine. `LINT_CMD` is
 # Per-engine configs live in build/<console>/.ralph.conf.
 
 BACKEND="github"
-AGENT_CLI="claude"
-AGENT_CMD="claude"
+AGENT_CLI="<agent-cli>"          # claude | codex | pi
+AGENT_CMD="<agent-cli>"
 AGENT_ARGS=""
 MODEL_CLASS="low"
-# MODEL="sonnet"
+# MODEL="<optional-explicit-model>"
 TEST_CMD=":"
 LINT_CMD="shellcheck"   # or ":" if shell scripts don't dominate
 ```
@@ -377,7 +387,7 @@ Docker recipes, etc.).
 
 ## Docker Sandbox Setup
 
-Goal: create a named `sbx` sandbox whose container has the project's validated test/lint toolchain pre-installed. `AGENT_CMD` wraps the whole Agent CLI, e.g. `sbx run <name> -- claude`. Provider-internal sandbox flags are opt-in `AGENT_ARGS`, not the default isolation boundary.
+Goal: create a named `sbx` sandbox whose container has the selected Agent CLI and the project's validated test/lint toolchain pre-installed. `AGENT_CMD` wraps the whole Agent CLI, e.g. `sbx run <name> -- codex` or `sbx run <name> -- claude`. Provider-internal sandbox flags are opt-in `AGENT_ARGS`, not the default isolation boundary. New recipes emit `AGENT_CLI`, `AGENT_CMD`, `AGENT_ARGS`, `MODEL_CLASS`, and optional `MODEL`; `CLAUDE_CMD` is legacy-only and must not be generated.
 
 ### Prerequisites check
 
@@ -390,24 +400,38 @@ If either fails, tell user what to install and stop here.
 
 ### Steps
 
-1. **Choose sandbox name** — suggest repo dirname, e.g. `my-project`. User may override. In a monorepo, use `<repo>-<console>`.
+1. **Choose sandbox name + Agent CLI** — suggest repo dirname, e.g. `my-project`. User may override. In a monorepo, use `<repo>-<console>`. Ask for Agent CLI (`codex`, `claude`, or `pi`); default to `codex` for new setups unless the user chooses otherwise.
 
-2. **Determine base image** from detected language:
+2. **Codex auth first (when `AGENT_CLI=codex`)** — prefer stored OAuth secrets, which keep tokens out of the project config and out of the agent environment:
+   ```bash
+   sbx secret set -g openai --oauth
+   ```
+   If OAuth is not available, document API key setup as the alternative:
+   ```bash
+   echo "$OPENAI_API_KEY" | sbx secret set -g openai
+   ```
+   Do not put OpenAI credentials in `.ralph.conf`.
 
-   | Language | Base image |
+3. **Determine base image/template** from Agent CLI + detected language:
+
+   | Agent CLI / Language | Base |
    |---|---|
-   | JS/TS | `node:20` |
-   | Python | `python:3.12` |
-   | Rust | `rust:latest` |
-   | Go | `golang:latest` |
-   | Java | `eclipse-temurin:21` |
-   | Unknown | `ubuntu:24.04` |
+   | `codex` | Docker's Codex sandbox template (`docker/sandbox-templates:codex-docker`, normally via `sbx create codex ...`) |
+   | `claude` | Docker's Claude Code template (`docker/sandbox-templates:claude-code-docker`, normally via `sbx create claude ...`) |
+   | `pi` | `ubuntu:24.04` plus the user's Pi installation steps |
+   | JS/TS tooling layer | install/verify Node 20 + `npm ci` |
+   | Python tooling layer | install/verify Python 3.12 + pytest/ruff as needed |
+   | Rust tooling layer | install/verify Rust + cargo/clippy as needed |
+   | Go tooling layer | install/verify Go + `go test` as needed |
+   | Java tooling layer | install/verify JDK 21 + gradle/maven as needed |
 
-3. **Determine toolchain installs** from validated TEST_CMD / LINT_CMD:
+   For Codex recipes, start from the Codex sandbox template, then layer project test/lint tooling on top; do **not** replace the Codex template with a plain language image.
+
+4. **Determine toolchain installs** from validated TEST_CMD / LINT_CMD:
 
    | Tool detected | Install command in container |
    |---|---|
-   | `npm test` / `vitest` | already in node image; ensure `npm ci` runs |
+   | `npm test` / `vitest` | install/verify Node 20 + npm, then ensure `npm ci` runs |
    | `pytest` | `pip install pytest` (or `pip install -r requirements.txt`) |
    | `ruff` | `pip install ruff` |
    | `flake8` | `pip install flake8` |
@@ -416,30 +440,15 @@ If either fails, tell user what to install and stop here.
    | `make` | `apt-get install -y make` |
    | ESLint | already via npm ci |
 
-4. **Generate Dockerfile** at `.ralph/Dockerfile.sandbox`:
+5. **Create or customize sandbox/template**:
 
-   ```dockerfile
-   FROM <base-image>
-   # Install project toolchain
-   WORKDIR /workspace
-   <install steps from table above>
-   # Agent CLI executable (example: Claude Code)
-   RUN npm install -g @anthropic-ai/claude-code
-   ```
-
-   Show to user and ask to confirm before writing.
-
-5. **Create sandbox**:
-
+   Prefer the agent-specific sbx template path:
    ```bash
-   sbx create <name> --dockerfile .ralph/Dockerfile.sandbox --mount .:/workspace
+   sbx create --name <name> <agent-cli> <git-root>
    ```
+   For Codex this uses Docker's Codex sandbox template. Then install the project toolchain in the sandbox (or snapshot a derived template) with the commands from the table above, for example Node projects verify/install `git`, `node`, and `npm ci` support.
 
-   If `sbx create` doesn't support `--dockerfile`, instruct user to run:
-   ```bash
-   docker build -t ralph-sbx-<name> -f .ralph/Dockerfile.sandbox .
-   sbx create <name> --image ralph-sbx-<name> --mount .:/workspace
-   ```
+   If a derived Dockerfile is needed, keep the agent template as the base rather than starting from a plain language image. Show generated Dockerfile/template commands to the user and ask to confirm before writing.
 
 6. **Verify sandbox**:
 
@@ -452,10 +461,12 @@ If either fails, tell user what to install and stop here.
 
 7. **Set config vars**:
    ```
-   AGENT_CLI="claude"
-   AGENT_CMD="sbx run <name> -- claude"
+   AGENT_CLI="<agent-cli>"
+   AGENT_CMD="sbx run <name> -- <agent-cli>"
    AGENT_ARGS=""
    SANDBOX_NAME="<name>"
+   MODEL_CLASS="low"
+   # MODEL="<optional-explicit-model>"
    ```
 
 8. **Add `.ralph/` to `.gitignore`** if user doesn't want to commit the Dockerfile. Ask.
@@ -468,12 +479,12 @@ If either fails, tell user what to install and stop here.
 # Per-project config for ralph. Sourced as bash from the repo root.
 
 BACKEND="github"                        # or "fs"
-AGENT_CLI="claude"                    # claude | codex | pi
-AGENT_CMD="sbx run my-project -- claude"  # or just "claude"
+AGENT_CLI="codex"                     # claude | codex | pi
+AGENT_CMD="sbx run my-project -- codex" # or just "codex"
 AGENT_ARGS=""                          # optional adapter args
-SANDBOX_NAME="my-project"              # omit if not using sbx
+# SANDBOX_NAME="my-project"            # optional; auto-derived from AGENT_CMD when it contains 'sbx run'
 MODEL_CLASS="low"                      # Model Class for adapter defaults
-# MODEL="sonnet"                       # optional explicit model override
+# MODEL="gpt-5.4"                      # optional explicit model override
 TEST_CMD="npm test"                     # command that exits 0 on pass
 LINT_CMD=":"                            # command that exits 0 on pass, or : for no-op
 ```
