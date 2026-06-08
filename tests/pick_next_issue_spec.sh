@@ -998,6 +998,386 @@ MOCK_PI
 test_pi_adapter_uses_json_mode_and_canonical_final_artifact
 test_pi_adapter_omits_model_and_falls_back_to_text_deltas
 
+# --- Adapter-independent regression tests (issue #48) ---
+setup_adapter_regression_fixture() {
+  local branch="${1:-feature/adapter-regression}"
+
+  git init >/dev/null 2>&1
+  git config user.email "test@example.com" >/dev/null 2>&1
+  git config user.name "Test User" >/dev/null 2>&1
+  git checkout -b "$branch" >/dev/null 2>&1
+
+  mkdir -p .scratch/demo/issues bin
+  cat > .scratch/ACTIVE <<'EOF'
+demo
+EOF
+  cat > .scratch/demo/PRD.md <<'EOF'
+# Demo PRD
+EOF
+  cat > .scratch/demo/issues/01-demo.md <<'EOF'
+Status: ready
+---
+Fixture issue.
+EOF
+
+  touch seed.txt
+  git add .scratch/ACTIVE .scratch/demo/PRD.md .scratch/demo/issues/01-demo.md seed.txt >/dev/null 2>&1
+  git commit -m "seed" >/dev/null 2>&1
+}
+
+write_invocation_sentinel() {
+  local path="$1"
+  cat > "$path" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+
+touch invoked.txt
+exit 99
+EOF
+  chmod +x "$path"
+}
+
+assert_no_iteration_state() {
+  local label="$1"
+  if [ -d .ralph-logs ] && find .ralph-logs -type f 2>/dev/null | grep -q .; then
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("$label: unexpected iteration state")
+    echo "FAIL: $label: unexpected iteration state"
+    find .ralph-logs -type f 2>/dev/null | sed 's/^/  /'
+  else
+    PASS=$((PASS+1))
+  fi
+
+  if [ -f invoked.txt ]; then
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("$label: adapter was invoked")
+    echo "FAIL: $label: adapter was invoked"
+  else
+    PASS=$((PASS+1))
+  fi
+}
+
+# --- common adapter log-layout / promise contract tests ---
+test_common_adapter_log_layouts() {
+  local test_dir repo_dir script_dir sentinel_dir output rc log_file final_file
+  test_dir=$(mktemp -d)
+  repo_dir="$test_dir/repo"
+  script_dir=$(mktemp -d)
+  sentinel_dir=$(mktemp -d)
+  mkdir -p "$repo_dir"
+  cd "$repo_dir" || exit 1
+
+  setup_adapter_regression_fixture "feature/adapter-layouts"
+  write_invocation_sentinel "$sentinel_dir/sentinel-agent"
+
+  local AGENT_ARGS MODEL_CLASS
+  AGENT_ARGS=""
+  MODEL_CLASS="low"
+
+  # Claude Code: stream-json + final result artifact extraction.
+  AGENT_CLI="claude"
+  AGENT_CMD="$script_dir/mock-claude"
+  cat > "$script_dir/mock-claude" <<'MOCK_CLAUDE'
+#!/usr/bin/env bash
+set -eu
+
+cat <<'JSONL'
+{"type":"assistant","message":{"content":[{"type":"text","text":"Planning..."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Claude final"},{"type":"text","text":"<promise>COMPLETE</promise>"}]}}
+{"type":"result","result":"<promise>COMPLETE</promise>"}
+JSONL
+MOCK_CLAUDE
+  chmod +x "$script_dir/mock-claude"
+  output=$(iterate_once 2>&1); rc=$?
+  log_file=$(find .ralph-logs/.scratch/demo -type f -name 'iter-*.jsonl' | sort | head -1)
+  final_file=$(iteration_final_message_file "$log_file")
+  assert_eq "adapter_layout: claude rc" "20" "$rc"
+  assert_eq "adapter_layout: claude promise" "COMPLETE" "$(extract_promise_from_iteration_artifacts "$log_file")"
+  if [ -f "$log_file" ] && [ -f "$final_file" ] && [[ "$log_file" == .ralph-logs/.scratch/demo/iter-*.jsonl ]] && [[ "$final_file" == .ralph-logs/.scratch/demo/iter-*.final.txt ]]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("adapter_layout: claude layout")
+    echo "FAIL: adapter_layout: claude layout"
+  fi
+
+  rm -rf .ralph-logs invoked.txt
+
+  # Codex: stdin prompt + JSONL stdout + native final-message artifact.
+  AGENT_CLI="codex"
+  AGENT_CMD="$script_dir/mock-codex"
+  AGENT_ARGS="--profile ci"
+  cat > "$script_dir/mock-codex" <<'MOCK_CODEX'
+#!/usr/bin/env bash
+set -eu
+
+printf '%s\n' "$@" > "$PWD/codex-args.txt"
+cat > "$PWD/codex-stdin.txt"
+
+output_file=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--output-last-message" ] || [ "$prev" = "-o" ]; then
+    output_file="$arg"
+    break
+  fi
+  prev="$arg"
+done
+
+[ -n "$output_file" ] || exit 91
+mkdir -p "$(dirname "$output_file")"
+cat > "$output_file" <<'EOF'
+Codex final
+<promise>COMPLETE</promise>
+EOF
+
+cat <<'JSONL'
+{"type":"thread.started","thread_id":"thread-1"}
+{"type":"item.completed","item":{"id":"1","type":"agent_message","text":"Planning..."}}
+{"type":"item.completed","item":{"id":"2","type":"agent_message","text":"Codex final"}}
+JSONL
+MOCK_CODEX
+  chmod +x "$script_dir/mock-codex"
+  output=$(iterate_once 2>&1); rc=$?
+  log_file=$(find .ralph-logs/.scratch/demo -type f -name 'iter-*.jsonl' | sort | head -1)
+  final_file=$(iteration_final_message_file "$log_file")
+  assert_eq "adapter_layout: codex rc" "20" "$rc"
+  assert_eq "adapter_layout: codex promise" "COMPLETE" "$(extract_promise_from_iteration_artifacts "$log_file")"
+  if [ -f "$log_file" ] && [ -f "$final_file" ] && grep -q 'thread.started' "$log_file" && grep -q 'Codex final' "$final_file"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("adapter_layout: codex layout")
+    echo "FAIL: adapter_layout: codex layout"
+  fi
+
+  rm -rf .ralph-logs invoked.txt codex-args.txt codex-stdin.txt
+
+  # Pi: JSON event stream + canonical final assistant message extraction.
+  AGENT_CLI="pi"
+  AGENT_CMD="$script_dir/mock-pi"
+  AGENT_ARGS="--profile ci"
+  MODEL="openai/gpt-5"
+  cat > "$script_dir/mock-pi" <<'MOCK_PI'
+#!/usr/bin/env bash
+set -eu
+
+printf '%s\n' "$@" > "$PWD/pi-args.txt"
+
+cat <<'JSONL'
+{"type":"session","version":3,"id":"sess-1","timestamp":"2026-01-01T00:00:00Z","cwd":"/tmp/demo"}
+{"type":"message_start","message":{"role":"assistant","content":[]}}
+{"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"Planning..."}]},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Planning...","partial":{"role":"assistant","content":[{"type":"text","text":"Planning..."}]}}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Pi final"},{"type":"text","text":"<promise>COMPLETE</promise>"}]}}
+JSONL
+MOCK_PI
+  chmod +x "$script_dir/mock-pi"
+  output=$(iterate_once 2>&1); rc=$?
+  log_file=$(find .ralph-logs/.scratch/demo -type f -name 'iter-*.jsonl' | sort | head -1)
+  final_file=$(iteration_final_message_file "$log_file")
+  assert_eq "adapter_layout: pi rc" "20" "$rc"
+  assert_eq "adapter_layout: pi promise" "COMPLETE" "$(extract_promise_from_iteration_artifacts "$log_file")"
+  if [ -f "$log_file" ] && [ -f "$final_file" ] && grep -q 'session' "$log_file" && grep -q 'Pi final' "$final_file"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("adapter_layout: pi layout")
+    echo "FAIL: adapter_layout: pi layout"
+  fi
+
+  cd / || true
+  rm -rf "$test_dir" "$script_dir" "$sentinel_dir"
+}
+
+test_common_adapter_log_layouts
+
+# --- preflight guards before adapter invocation (issue #48) ---
+test_preflight_guards_block_all_adapters() {
+  local test_dir sentinel_dir output rc cli
+
+  test_dir=$(mktemp -d)
+  sentinel_dir=$(mktemp -d)
+  cd "$test_dir" || exit 1
+  setup_adapter_regression_fixture "main"
+  write_invocation_sentinel "$sentinel_dir/sentinel-agent"
+
+  for cli in claude codex pi; do
+    AGENT_CLI="$cli"
+    AGENT_CMD="$sentinel_dir/sentinel-agent"
+    AGENT_ARGS=""
+    MODEL=""
+    MODEL_CLASS="low"
+    output=$(iterate_once 2>&1); rc=$?
+    assert_eq "guard_main: $cli rc" "11" "$rc"
+    if [ -f invoked.txt ]; then
+      FAIL=$((FAIL+1))
+      FAILED_NAMES+=("guard_main: $cli invoked")
+      echo "FAIL: guard_main: $cli invoked"
+    else
+      PASS=$((PASS+1))
+    fi
+    rm -f invoked.txt
+  done
+
+  cd / || true
+  rm -rf "$test_dir" "$sentinel_dir"
+
+  test_dir=$(mktemp -d)
+  sentinel_dir=$(mktemp -d)
+  cd "$test_dir" || exit 1
+  setup_adapter_regression_fixture "feature/dirty-tree"
+  write_invocation_sentinel "$sentinel_dir/sentinel-agent"
+  echo dirty > dirty.txt
+
+  for cli in claude codex pi; do
+    AGENT_CLI="$cli"
+    AGENT_CMD="$sentinel_dir/sentinel-agent"
+    AGENT_ARGS=""
+    MODEL=""
+    MODEL_CLASS="low"
+    output=$(iterate_once 2>&1); rc=$?
+    assert_eq "guard_dirty: $cli rc" "12" "$rc"
+    if [ -f invoked.txt ]; then
+      FAIL=$((FAIL+1))
+      FAILED_NAMES+=("guard_dirty: $cli invoked")
+      echo "FAIL: guard_dirty: $cli invoked"
+    else
+      PASS=$((PASS+1))
+    fi
+    rm -f invoked.txt
+  done
+
+  cd / || true
+  rm -rf "$test_dir" "$sentinel_dir"
+}
+
+test_preflight_guards_block_all_adapters
+
+# --- unsupported adapter/model-class failures leave no iteration state (issue #48) ---
+test_unsupported_config_leaves_no_iteration_state() {
+  local test_dir sentinel_dir output rc
+
+  test_dir=$(mktemp -d)
+  sentinel_dir=$(mktemp -d)
+  cd "$test_dir" || exit 1
+  setup_adapter_regression_fixture "feature/unsupported-config"
+  write_invocation_sentinel "$sentinel_dir/sentinel-agent"
+
+  AGENT_CLI="cursor"
+  AGENT_CMD="$sentinel_dir/sentinel-agent"
+  AGENT_ARGS=""
+  MODEL=""
+  MODEL_CLASS="low"
+  output=$(iterate_once 2>&1); rc=$?
+  assert_eq "unsupported_cli: rc" "1" "$rc"
+  if echo "$output" | grep -q "unsupported AGENT_CLI 'cursor'"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("unsupported_cli: message")
+    echo "FAIL: unsupported_cli: message"
+  fi
+  assert_no_iteration_state "unsupported_cli"
+  rm -rf .ralph-logs invoked.txt
+
+  AGENT_CLI="claude"
+  AGENT_CMD="$sentinel_dir/sentinel-agent"
+  AGENT_ARGS=""
+  MODEL=""
+  MODEL_CLASS="medium"
+  output=$(iterate_once 2>&1); rc=$?
+  assert_eq "unsupported_model_class: rc" "1" "$rc"
+  if echo "$output" | grep -q "unsupported MODEL_CLASS 'medium'"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("unsupported_model_class: message")
+    echo "FAIL: unsupported_model_class: message"
+  fi
+  assert_no_iteration_state "unsupported_model_class"
+
+  cd / || true
+  rm -rf "$test_dir" "$sentinel_dir"
+}
+
+test_unsupported_config_leaves_no_iteration_state
+
+# --- recovery and baseline remain adapter-agnostic (issue #48) ---
+test_recovery_and_baseline_are_adapter_agnostic() {
+  local test_dir cli baseline_expected baseline_text output_expected output
+
+  test_dir=$(mktemp -d)
+  cd "$test_dir" || exit 1
+
+  git init >/dev/null 2>&1
+  git config user.email "test@example.com" >/dev/null 2>&1
+  git config user.name "Test User" >/dev/null 2>&1
+  git checkout -b feature/recovery-regression >/dev/null 2>&1
+  touch seed.txt
+  git add seed.txt >/dev/null 2>&1
+  git commit -m "seed" >/dev/null 2>&1
+
+  mkdir -p .scratch/demo/issues .ralph-logs/demo bin
+  cat > .scratch/ACTIVE <<'EOF'
+demo
+EOF
+  cat > .scratch/demo/PRD.md <<'EOF'
+# Demo PRD
+EOF
+  cat > .scratch/demo/issues/42.md <<'EOF'
+Status: ready
+---
+Recovery fixture.
+EOF
+
+  cat > bin/date <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "+%s" ]; then
+  echo 1700000000
+else
+  /bin/date "$@"
+fi
+EOF
+  chmod +x bin/date
+  PATH="$(pwd)/bin:$PATH"
+
+  baseline_expected=""
+  for cli in claude codex pi; do
+    AGENT_CLI="$cli"
+    AGENT_CMD="./bin/sentinel-agent"
+    AGENT_ARGS=""
+    MODEL=""
+    MODEL_CLASS="low"
+    record_baseline "demo" "42"
+    baseline_text=$(cat .ralph-logs/demo/baseline)
+    if [ -z "$baseline_expected" ]; then
+      baseline_expected="$baseline_text"
+    else
+      assert_eq "baseline_agreement: $cli" "$baseline_expected" "$baseline_text"
+    fi
+  done
+
+  output_expected=""
+  for cli in claude codex pi; do
+    AGENT_CLI="$cli"
+    AGENT_CMD="./bin/sentinel-agent"
+    AGENT_ARGS=""
+    MODEL=""
+    MODEL_CLASS="low"
+    output=$(BACKEND=fs cmd_recover demo 2>&1)
+    if [ -z "$output_expected" ]; then
+      output_expected="$output"
+    else
+      assert_eq "recover_agreement: $cli" "$output_expected" "$output"
+    fi
+  done
+
+  cd / || true
+  rm -rf "$test_dir"
+}
+
+test_recovery_and_baseline_are_adapter_agnostic
+
 # --- Inspect list mode test (issue #16) ---
 test_inspect_list() {
   local test_dir
