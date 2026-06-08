@@ -1,6 +1,6 @@
 ---
 name: ralph-init
-description: Scaffold a .ralph.conf for the current repo. Detects primary language (or, in a monorepo, multiple game-engine ports under build/<console>/), suggests TEST_CMD, LINT_CMD, BACKEND, MODEL, and CLAUDE_CMD. Optionally guides Docker/sbx sandbox setup so AFK runs execute in an isolated container (host machine is NOT used for tests/lint — the container is). Use when user says "ralph init", "set up ralph", "create .ralph.conf", or wants to configure ralph for a new project (single-engine or multi-engine monorepo).
+description: Scaffold a .ralph.conf for the current repo. Detects primary language (or, in a monorepo, multiple game-engine ports under build/<console>/), suggests TEST_CMD, LINT_CMD, BACKEND, AGENT_CLI, AGENT_CMD, AGENT_ARGS, MODEL_CLASS, and optional MODEL. Optionally guides Docker/sbx sandbox setup so AFK runs execute in an isolated container (host machine is NOT used for tests/lint — the container is). Use when user says "ralph init", "set up ralph", "create .ralph.conf", or wants to configure ralph for a new project (single-engine or multi-engine monorepo).
 ---
 
 # ralph-init
@@ -25,16 +25,16 @@ use the [monorepo flow](#monorepo-multi-engine-flow). Otherwise use the
 ### Why no ralph code change is needed
 
 `TEST_CMD` and `LINT_CMD` are **never executed by ralph** — they are
-interpolated as *text* into the Claude prompt ("Run tests via:
+interpolated as *text* into the Agent CLI prompt ("Run tests via:
 $TEST_CMD"). The agent runs them. `.ralph.conf` is sourced relative to
 **cwd** (`bin/ralph` sources `./.ralph.conf`). So per-port configs and
 per-engine runs work today with zero changes to `bin/ralph`: you `cd`
 into a port dir (or stay at root) and run ralph there.
 
-`CLAUDE_CMD`/`SANDBOX_NAME`, by contrast, *are* executed — they wrap the
-**entire** claude invocation for a run. One run therefore wraps one
+`AGENT_CMD`/`SANDBOX_NAME`, by contrast, *are* executed — `AGENT_CMD` wraps the
+**entire** Agent CLI invocation for a run. One run therefore wraps one
 sandbox, which is why a monorepo runs **per-engine**, not as one mixed
-queue.
+queue. Legacy `CLAUDE_CMD` is compatibility-only for the Claude adapter.
 
 ---
 
@@ -85,7 +85,7 @@ queue.
 3. **Ask: Docker sandbox?** — after detecting TEST_CMD/LINT_CMD, ask:
    > "Run AFK sessions in a Docker sandbox? (isolated container; host machine not used for tests/lint)"
 
-   - If **no** → skip to step 4 with `CLAUDE_CMD="claude"`
+   - If **no** → skip to step 4 with `AGENT_CLI="claude"` and `AGENT_CMD="claude"`
    - If **yes** → follow [Docker Sandbox Setup](#docker-sandbox-setup) below, then return to step 4
 
 4. **Show proposed config** — print the full `.ralph.conf` content to user before writing.
@@ -163,8 +163,8 @@ isolation). If the file already exists, prompt to overwrite (default
 skip).
 
 **Naming convention:** sandbox template tag and `SANDBOX_NAME` =
-`<repo>-<console>`; for dockerized tiers `CLAUDE_CMD="sbx run
-<repo>-<console> --"`.
+`<repo>-<console>`; for dockerized tiers wrap the whole Agent CLI with
+`AGENT_CMD="sbx run <repo>-<console> -- <agent-cli>"`.
 
 **Milestone convention:** document `<console>-<feature>` (e.g.
 `dragonruby-articulated-rig`) as a comment. The milestone is a runtime
@@ -179,7 +179,11 @@ Shared header for every port config:
 # Milestone is a runtime arg to 'ralph once', not stored in config.
 
 BACKEND="github"
-MODEL="haiku"
+AGENT_CLI="claude"
+AGENT_CMD="claude"
+AGENT_ARGS=""
+MODEL_CLASS="low"
+# MODEL="sonnet"
 ```
 
 Then the tier-specific tail:
@@ -187,9 +191,9 @@ Then the tier-specific tail:
 **host-fallback (pico8, picotron):**
 
 ```bash
-# Host fallback: no sandbox yet. CLAUDE_CMD runs on host; TEST_CMD is a stub.
+# Host fallback: no sandbox yet. AGENT_CMD runs on host; TEST_CMD is a stub.
 # TODO: implement code-judo Docker recipe (see dragonruby ADR-0016/ADR-0022).
-CLAUDE_CMD="claude"
+AGENT_CMD="claude"
 TEST_CMD=":"
 LINT_CMD=":"
 ```
@@ -242,7 +246,7 @@ exit 0
    # sandbox + clean linux `npm ci`. COMMIT AND PUSH before tests reflect changes
    # (ADR-0022: "WIP must be pushed to be testable"). Absolute path: agent cwd in
    # the sandbox is not the mount.
-   CLAUDE_CMD="sbx run <repo>-littlejs --"
+   AGENT_CMD="sbx run <repo>-littlejs -- claude"
    TEST_CMD="<ENGINE>_TEST_SOURCE=remote <abs-path>/run_tests test"
    LINT_CMD="<ENGINE>_TEST_SOURCE=remote <abs-path>/run_tests lint"
    ```
@@ -326,7 +330,7 @@ rewrite that broke it.
 **6. Emit config** — `<port>/.ralph.conf`:
 
 ```bash
-CLAUDE_CMD="sbx run <repo>-dragonruby --"
+AGENT_CMD="sbx run <repo>-dragonruby -- claude"
 TEST_CMD="DR_TEST_SOURCE=remote ./run_tests"
 LINT_CMD="bundle exec rubocop"
 ```
@@ -342,8 +346,11 @@ orchestration) that aren't tied to one engine. `LINT_CMD` is
 # Per-engine configs live in build/<console>/.ralph.conf.
 
 BACKEND="github"
-MODEL="haiku"
-CLAUDE_CMD="claude"
+AGENT_CLI="claude"
+AGENT_CMD="claude"
+AGENT_ARGS=""
+MODEL_CLASS="low"
+# MODEL="sonnet"
 TEST_CMD=":"
 LINT_CMD="shellcheck"   # or ":" if shell scripts don't dominate
 ```
@@ -359,7 +366,7 @@ Docker recipes, etc.).
 ## Known limitations
 
 - **host-fallback tiers (pico8, picotron) have no sandbox recipe.** Their
-  `.sbx/build.sh` is a stub and `TEST_CMD`/`LINT_CMD` are no-ops; `CLAUDE_CMD`
+  `.sbx/build.sh` is a stub and `TEST_CMD`/`LINT_CMD` are no-ops; `AGENT_CMD`
   runs on the host. A real code-judo Docker recipe (cf. dragonruby
   ADR-0016/ADR-0022) is not yet implemented.
 - The monorepo flow assumes an interactive session — external repo access
@@ -370,7 +377,7 @@ Docker recipes, etc.).
 
 ## Docker Sandbox Setup
 
-Goal: create a named `sbx` sandbox whose container has the project's validated test/lint toolchain pre-installed. `CLAUDE_CMD` becomes `sbx run <name> -- claude`.
+Goal: create a named `sbx` sandbox whose container has the project's validated test/lint toolchain pre-installed. `AGENT_CMD` wraps the whole Agent CLI, e.g. `sbx run <name> -- claude`. Provider-internal sandbox flags are opt-in `AGENT_ARGS`, not the default isolation boundary.
 
 ### Prerequisites check
 
@@ -416,7 +423,7 @@ If either fails, tell user what to install and stop here.
    # Install project toolchain
    WORKDIR /workspace
    <install steps from table above>
-   # claude-code CLI (required for AFK)
+   # Agent CLI executable (example: Claude Code)
    RUN npm install -g @anthropic-ai/claude-code
    ```
 
@@ -445,7 +452,9 @@ If either fails, tell user what to install and stop here.
 
 7. **Set config vars**:
    ```
-   CLAUDE_CMD="sbx run <name> -- claude"
+   AGENT_CLI="claude"
+   AGENT_CMD="sbx run <name> -- claude"
+   AGENT_ARGS=""
    SANDBOX_NAME="<name>"
    ```
 
@@ -459,9 +468,12 @@ If either fails, tell user what to install and stop here.
 # Per-project config for ralph. Sourced as bash from the repo root.
 
 BACKEND="github"                        # or "fs"
-CLAUDE_CMD="sbx run my-project -- claude"  # or just "claude"
+AGENT_CLI="claude"                    # claude | codex | pi
+AGENT_CMD="sbx run my-project -- claude"  # or just "claude"
+AGENT_ARGS=""                          # optional adapter args
 SANDBOX_NAME="my-project"              # omit if not using sbx
-MODEL="haiku"                           # haiku (fast/cheap AFK) or sonnet
+MODEL_CLASS="low"                      # Model Class for adapter defaults
+# MODEL="sonnet"                       # optional explicit model override
 TEST_CMD="npm test"                     # command that exits 0 on pass
 LINT_CMD=":"                            # command that exits 0 on pass, or : for no-op
 ```
@@ -471,9 +483,13 @@ LINT_CMD=":"                            # command that exits 0 on pass, or : for
 | Var | Default | Notes |
 |---|---|---|
 | `BACKEND` | `fs` | `github` uses GH Issues/Milestones |
-| `CLAUDE_CMD` | `claude` | Prefix with `sbx run <name> --` for sandbox |
-| `SANDBOX_NAME` | derived from CLAUDE_CMD | Set explicitly if CLAUDE_CMD doesn't contain `sbx run` |
-| `MODEL` | `sonnet` | `haiku` recommended for AFK cost savings |
+| `AGENT_CLI` | `claude` | Adapter: `claude`, `codex`, or `pi` |
+| `AGENT_CMD` | value of `AGENT_CLI` | Executable/wrapper; prefix with `sbx run <name> --` for ralph-level sandboxing |
+| `AGENT_ARGS` | empty | Optional provider-specific adapter args, including provider-internal sandbox flags if explicitly desired |
+| `SANDBOX_NAME` | derived from AGENT_CMD | Set explicitly if AGENT_CMD doesn't contain `sbx run` |
+| `MODEL_CLASS` | `low` | Model Class for adapter defaults |
+| `MODEL` | empty | Optional explicit model override |
+| `CLAUDE_CMD` | empty | Legacy compatibility alias for Claude adapter only |
 | `TEST_CMD` | `./run_tests` | Must exit 0 on pass |
 | `LINT_CMD` | `/lint` | Use `:` for no-op |
 | `STUCK_CPU_SECS` | `180` | Seconds before ralph flags hung process |

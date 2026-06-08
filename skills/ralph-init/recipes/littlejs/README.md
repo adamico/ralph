@@ -23,7 +23,10 @@ dragonruby recipe (imported from `adamico/locomotion`). First built in
 The skill generates a `.ralph.conf` for the port with:
 
 ```bash
-CLAUDE_CMD="sbx run <repo>-littlejs --"
+AGENT_CLI="claude"
+AGENT_CMD="sbx run <repo>-littlejs -- claude"
+AGENT_ARGS=""
+MODEL_CLASS="low"
 TEST_CMD="<ENGINE>_TEST_SOURCE=remote <abs-path>/run_tests test"
 LINT_CMD="<ENGINE>_TEST_SOURCE=remote <abs-path>/run_tests lint"
 ```
@@ -46,7 +49,7 @@ the sandbox is not the mount.
 **Remote mode tests `origin/<branch>`, so the agent must commit AND push before
 tests reflect its changes** (ADR-0022, locomotion: "WIP must be pushed to be
 testable"). The generated `.ralph.conf` header states this contract so the
-haiku agent reads it.
+low-cost agent reads it.
 
 ## Assumptions
 

@@ -18,7 +18,7 @@ When importing this recipe into a port's `.sbx/` directory, these paths require 
 | Line 115 | `DR_LINUX_ARM64_SRC` env var | `$DR_LINUX_ARM64_SRC` ✓ | Host path; passed at runtime |
 
 **Sandbox Names & Template Tags:**
-- `SANDBOX_NAME` defaults to `claude-locomotion` → should become `<repo>-dragonruby`
+- `SANDBOX_NAME` defaults to the legacy `claude-locomotion` value in imported sources → should become `<repo>-dragonruby`
 - `TEMPLATE_TAG` defaults to `dragonruby` → follows naming convention, no change needed
 
 ## Path Rewrites in `dr-update-sandbox`

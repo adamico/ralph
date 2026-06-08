@@ -36,9 +36,10 @@ if ! sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$SANDBOX_NAME"; then
   sbx create --name "$SANDBOX_NAME" --image "node:20" "$GIT_ROOT"
 fi
 
-# Ensure git + the claude-code CLI are present inside the sandbox (AFK runs
-# claude in-sandbox via CLAUDE_CMD="sbx run $SANDBOX_NAME --").
-echo ">> ensuring git + claude-code CLI"
+# Ensure git + an Agent CLI executable are present inside the sandbox.
+# This recipe installs Claude Code as the example adapter used by the generated
+# AGENT_CMD="sbx run $SANDBOX_NAME -- claude".
+echo ">> ensuring git + Agent CLI executable"
 sbx exec -i "$SANDBOX_NAME" bash -c '
   command -v git >/dev/null 2>&1 || (apt-get update && apt-get install -y git)
   command -v claude >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code

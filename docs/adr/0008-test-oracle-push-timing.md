@@ -10,7 +10,7 @@ we currently ship **B**.
 
 ## Context
 
-AFK iterations run Claude inside a container (`CLAUDE_CMD="sbx run <name> --"`).
+AFK iterations run the configured Agent CLI inside a ralph-level sandbox (`AGENT_CMD="sbx run <name> -- <agent-cli>"`).
 Node ports hit a hard constraint: the host workspace is bind-mounted into the
 container, but its `node_modules` is built for **darwin** and is unusable by the
 **linux** sandbox. So tests cannot simply run against the mounted tree. Whatever
@@ -51,7 +51,7 @@ is truth, just moved off-box and async.
   dep handling at all.
 - ➕ Single source of truth shared by agent, CI, and reviewers.
 - ➖ Async: runner spin-up + queue = minutes per iteration vs seconds in-sandbox.
-- ➖ Polling + CI-log parsing burden on a **haiku** agent (more steps/tokens, no
+- ➖ Polling + CI-log parsing burden on a low-cost Agent CLI model (more steps/tokens, no
   clean exit code).
 - ➖ Same push-noise as B, amplified (CI fires every push); loses any fast local
   mode.

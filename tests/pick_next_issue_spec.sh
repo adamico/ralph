@@ -743,8 +743,7 @@ MOCK_CODEX
   if printf '%s\n' "$args_dump" | grep -qx -- "exec" \
     && printf '%s\n' "$args_dump" | grep -qx -- "--json" \
     && printf '%s\n' "$args_dump" | grep -qx -- "--output-last-message" \
-    && printf '%s\n' "$args_dump" | grep -qx -- "--sandbox" \
-    && printf '%s\n' "$args_dump" | grep -qx -- "danger-full-access" \
+    && ! printf '%s\n' "$args_dump" | grep -qx -- "--sandbox" \
     && printf '%s\n' "$args_dump" | grep -qx -- "--ask-for-approval" \
     && printf '%s\n' "$args_dump" | grep -qx -- "never" \
     && printf '%s\n' "$args_dump" | grep -qx -- "--model" \
@@ -753,8 +752,8 @@ MOCK_CODEX
     PASS=$((PASS+1))
   else
     FAIL=$((FAIL+1))
-    FAILED_NAMES+=("codex_adapter: expected codex exec arguments missing")
-    echo "FAIL: codex_adapter: expected codex exec arguments missing"
+    FAILED_NAMES+=("codex_adapter: expected codex exec arguments missing or provider sandbox default present")
+    echo "FAIL: codex_adapter: expected codex exec arguments missing or provider sandbox default present"
     echo "$args_dump"
   fi
 
@@ -1143,6 +1142,13 @@ MOCK_CODEX
   final_file=$(iteration_final_message_file "$log_file")
   assert_eq "adapter_layout: codex rc" "20" "$rc"
   assert_eq "adapter_layout: codex promise" "COMPLETE" "$(extract_promise_from_iteration_artifacts "$log_file")"
+  if grep -q -- '--sandbox' codex-args.txt; then
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("adapter_layout: codex no default provider sandbox")
+    echo "FAIL: adapter_layout: codex no default provider sandbox"
+  else
+    PASS=$((PASS+1))
+  fi
   if [ -f "$log_file" ] && [ -f "$final_file" ] && grep -q 'thread.started' "$log_file" && grep -q 'Codex final' "$final_file"; then
     PASS=$((PASS+1))
   else

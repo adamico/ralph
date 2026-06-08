@@ -15,7 +15,7 @@ To make redo mechanical instead of guesswork, two things are fixed:
    test oracle (`origin/<branch>`) and the only branch recovery force-pushes. `main`
    is never the engagement branch.
 2. **Iteration baseline.** ralph records HEAD at the start of each iteration (before
-   invoking Claude). Recovery resets the engagement branch to that SHA, so the reset
+   invoking the configured Agent CLI). Recovery resets the engagement branch to that SHA, so the reset
    target is recorded fact, not inferred from `git log`.
 
 ## Considered options
