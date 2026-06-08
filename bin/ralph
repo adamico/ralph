@@ -1386,13 +1386,12 @@ iterate_once() {
   # Create session marker (PID file) and set up cleanup trap
   local running_file="$logs_dir/running"
   echo "$$" > "$running_file" || { echo "ralph: failed to create running file" >&2; return 1; }
-  # shellcheck disable=SC2064
-  trap "rm -f '$running_file'" EXIT
+  RALPH_RUNNING_FILE="$running_file"
+  trap 'rm -f -- "$RALPH_RUNNING_FILE"' EXIT
 
   local ts iter_num log_file final_file
   ts=$(date +%s)
-  # shellcheck disable=SC2012
-  iter_num=$(ls "$logs_dir"/iter-* 2>/dev/null | wc -l | awk '{print $1+1}')
+  iter_num=$(find "$logs_dir" -maxdepth 1 -type f -name 'iter-*.jsonl' 2>/dev/null | wc -l | awk '{print $1+1}')
   log_file="$logs_dir/iter-${iter_num}-${ts}.jsonl"
   final_file=$(iteration_final_message_file "$log_file")
 
