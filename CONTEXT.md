@@ -20,12 +20,16 @@ the active milestone with labels and a `Blocked-by:` body line.
 or issue number) whose status is ready and all `Blocked-by` dependencies are done.
 See ADR-0001.
 
-**Iteration** — one invocation of `iterate_once`: pick an issue, invoke Claude,
+**Iteration** — one cycle of ralph work: pick an issue, invoke an Agent CLI,
 handle the result (done / blocked / complete / error).
 
+**Agent CLI** — the command-line coding agent ralph invokes for an iteration.
+Claude Code, Codex, and Pi are supported implementations of this role; domain
+language should not treat any one implementation as synonymous with ralph itself.
+
 **Sandbox** — the isolated container an AFK iteration runs inside, wrapping the
-entire Claude invocation (`CLAUDE_CMD="sbx run <name> --"`). One run = one
-sandbox = one engine. Named `<repo>-<console>` for engine ports.
+entire Agent CLI invocation. One run = one sandbox = one engine. Named
+`<repo>-<console>` for engine ports.
 
 **Recipe** — a bundled, reusable setup for a given engine (sandbox build +
 test harness + `.ralph.conf` shape) that `ralph-init` instantiates so a new
@@ -34,6 +38,11 @@ port does not re-derive it. Classified by **tier**.
 **Tier** — how mature a recipe is: *mature-external* (imported from a proven
 repo, e.g. dragonruby from `adamico/locomotion`), *standard* (e.g. littlejs
 node/vitest), *host-fallback* (no container yet, e.g. pico8/picotron).
+
+**Model Class** — the cost/capability class ralph uses to select a default
+Agent CLI model for unattended loops. Initially only `low` is defined; explicit
+`MODEL` overrides the class default.
+_Avoid_: Model tier, because **Tier** already means recipe maturity.
 
 **Test source** — which copy of the code a recipe's test harness exercises,
 selected by `<ENGINE>_TEST_SOURCE`: `local` (the host workspace in place, picks

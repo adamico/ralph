@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# ralph — Ralph Wiggum loop for AFK Claude Code runs.
+# ralph — Ralph Wiggum loop for AFK agent-cli runs.
 # Drains issues per ADR-0015 priority rules; overridable via .ralph.conf.
 set -uo pipefail
 
 usage() {
   cat <<EOF
 Usage:
-  ralph once [-i] [<milestone>]      # one iteration; -i runs claude interactively (milestone required for github backend)
+  ralph once [-i] [<milestone>]      # one iteration; -i runs legacy interactive mode (milestone required for github backend)
   ralph run <N> [<milestone>]        # up to N iterations, halts on COMPLETE/BLOCKED
   ralph ls [<prd|milestone>]         # list PRDs/milestones or show issue queue
   ralph status                       # inspect running iterations + suspicious processes
@@ -22,11 +22,15 @@ EOF
 STUCK_CPU_SECS="${STUCK_CPU_SECS:-180}"
 
 # --- defaults ---------------------------------------------------------
-CLAUDE_CMD="claude"
+AGENT_CLI="${AGENT_CLI:-}"
+AGENT_CMD="${AGENT_CMD:-}"
+AGENT_ARGS="${AGENT_ARGS:-}"
+CLAUDE_CMD="${CLAUDE_CMD:-}"
 MARKER_FILE=".scratch/ACTIVE"
 TEST_CMD="./run_tests"
 LINT_CMD="/lint"
-MODEL="${MODEL:-sonnet}"
+MODEL="${MODEL:-}"
+MODEL_CLASS="${MODEL_CLASS:-low}"
 
 # Backend: 'fs' (default, .scratch/<active>/issues/*.md) or 'github'.
 BACKEND="${BACKEND:-fs}"
@@ -34,6 +38,14 @@ BACKEND="${BACKEND:-fs}"
 GH_REPO="${GH_REPO:-}"                    # optional; defaults to gh-detected repo
 GH_LABEL_READY="${GH_LABEL_READY:-ready-for-agent}"
 GH_LABEL_BLOCKED="${GH_LABEL_BLOCKED:-blocked}"
+LEGACY_CLAUDE_CMD_WARNED=0
+RESOLVED_AGENT_CLI=""
+RESOLVED_AGENT_CMD=""
+RESOLVED_AGENT_ARGS=""
+RESOLVED_MODEL=""
+RESOLVED_MODEL_SOURCE=""
+RESOLVED_MODEL_CLASS=""
+RESOLVED_MODEL_DISPLAY=""
 
 pick_next_issue() {
   # ADR-0015: lowest filename with a ready Status AND every Blocked-by
@@ -91,6 +103,7 @@ infer_milestone_gh() {
   [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
 
   local milestones_json
+  # shellcheck disable=SC2086
   milestones_json=$(gh api $repo_flag repos/:owner/:repo/milestones?state=open 2>/dev/null | jq -r '.[] | .title') || {
     echo "ralph: failed to fetch milestones" >&2
     return 1
@@ -142,12 +155,14 @@ close_milestone_gh() {
   [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
 
   local milestone_num
+  # shellcheck disable=SC2086
   milestone_num=$(gh api $repo_flag "repos/:owner/:repo/milestones" \
     --jq ".[] | select(.title == \"$milestone\") | .number" 2>/dev/null)
   if [ -z "$milestone_num" ]; then
     echo "ralph: warning: could not resolve milestone number for '$milestone'; skipping auto-close" >&2
     return 0
   fi
+  # shellcheck disable=SC2086
   if gh api $repo_flag "repos/:owner/:repo/milestones/$milestone_num" \
        -X PATCH -f state=closed >/dev/null 2>&1; then
     echo "ralph: milestone '$milestone' closed."
@@ -170,6 +185,7 @@ pick_next_issue_gh() {
 
   # All open issues in milestone, sorted ascending by number.
   local open_json
+  # shellcheck disable=SC2086
   open_json=$(gh issue list $repo_flag --milestone "$milestone" --state open \
               --json number,labels,body --limit 200 2>/dev/null) || { echo ""; return 0; }
   local any_open
@@ -195,6 +211,7 @@ pick_next_issue_gh() {
         d=$(printf '%s' "$d" | tr -d '[:space:]#')
         [ -z "$d" ] && continue
         local dstate
+        # shellcheck disable=SC2086
         dstate=$(gh issue view "$d" $repo_flag --json state -q .state 2>/dev/null)
         if [ "$dstate" != "CLOSED" ]; then deps_ok=0; break; fi
       done
@@ -328,6 +345,7 @@ read_baseline() {
   BASELINE_SHA=$(_bl_val sha)
   BASELINE_ISSUE=$(_bl_val issue)
   BASELINE_BRANCH=$(_bl_val branch)
+  # shellcheck disable=SC2034
   BASELINE_TIMESTAMP=$(_bl_val timestamp)
   unset -f _bl_val
 
@@ -349,20 +367,121 @@ ralph run 1 $milestone
 EOF
 }
 
+warn_legacy_claude_cmd_once() {
+  if [ "$LEGACY_CLAUDE_CMD_WARNED" -eq 0 ]; then
+    echo "ralph: warning: CLAUDE_CMD is deprecated; prefer AGENT_CLI=claude with AGENT_CMD." >&2
+    LEGACY_CLAUDE_CMD_WARNED=1
+  fi
+}
+
+resolve_agent_cli_config() {
+  local cli="${AGENT_CLI:-}"
+  local cmd="${AGENT_CMD:-}"
+  local args="${AGENT_ARGS:-}"
+  local legacy_cmd="${CLAUDE_CMD:-}"
+
+  if [ -n "$cmd" ] && [ -z "$cli" ]; then
+    echo "ralph: AGENT_CMD is set but AGENT_CLI is missing" >&2
+    return 1
+  fi
+
+  if [ -z "$cmd" ]; then
+    if [ -n "$legacy_cmd" ] && { [ -z "$cli" ] || [ "$cli" = "claude" ]; }; then
+      cmd="$legacy_cmd"
+      cli="claude"
+      warn_legacy_claude_cmd_once
+    elif [ -z "$cli" ]; then
+      cli="claude"
+      cmd="claude"
+    else
+      cmd="$cli"
+    fi
+  fi
+
+  if [ -z "$cli" ]; then
+    cli="claude"
+  fi
+
+  case "$cli" in
+    claude|codex|pi) ;;
+    *)
+      echo "ralph: unsupported AGENT_CLI '$cli' (expected: claude, codex, pi)" >&2
+      return 1
+      ;;
+  esac
+
+  RESOLVED_AGENT_CLI="$cli"
+  RESOLVED_AGENT_CMD="$cmd"
+  RESOLVED_AGENT_ARGS="$args"
+  return 0
+}
+
+resolve_model_config() {
+  local cli="$1"
+  local model_class="${MODEL_CLASS:-low}"
+
+  # shellcheck disable=SC2034
+  RESOLVED_MODEL_CLASS="$model_class"
+
+  if [ -n "${MODEL:-}" ]; then
+    RESOLVED_MODEL="$MODEL"
+    RESOLVED_MODEL_SOURCE="explicit"
+    RESOLVED_MODEL_DISPLAY="$MODEL (explicit)"
+    return 0
+  fi
+
+  case "$model_class" in
+    low) ;;
+    *)
+      echo "ralph: unsupported MODEL_CLASS '$model_class' (expected: low)" >&2
+      return 1
+      ;;
+  esac
+
+  case "$cli" in
+    claude)
+      RESOLVED_MODEL="sonnet"
+      RESOLVED_MODEL_SOURCE="model-class:$model_class"
+      RESOLVED_MODEL_DISPLAY="sonnet (MODEL_CLASS=$model_class default)"
+      ;;
+    codex)
+      RESOLVED_MODEL="gpt-5.4"
+      RESOLVED_MODEL_SOURCE="model-class:$model_class"
+      RESOLVED_MODEL_DISPLAY="gpt-5.4 (MODEL_CLASS=$model_class default)"
+      ;;
+    pi)
+      RESOLVED_MODEL=""
+      # shellcheck disable=SC2034
+      RESOLVED_MODEL_SOURCE="provider-default"
+      RESOLVED_MODEL_DISPLAY="provider default (MODEL_CLASS=$model_class; ralph omits --model)"
+      ;;
+  esac
+  return 0
+}
+
+agent_model_manifest_value() {
+  printf '%s' "$RESOLVED_MODEL_DISPLAY"
+}
+
 # --- load project config ---------------------------------------------
 SANDBOX_NAME=""
+# shellcheck disable=SC1091
 [ -f ./.ralph.conf ] && . ./.ralph.conf
 
-# Auto-derive sandbox name from CLAUDE_CMD if not set: `sbx run <name>` or
-# `sbx run claude --` (default name pattern is claude-<workdir>).
-if [ -z "$SANDBOX_NAME" ] && [[ "$CLAUDE_CMD" == *"sbx run"* ]]; then
-  arg=$(echo "$CLAUDE_CMD" | awk '{for (i=1;i<=NF;i++) if ($i=="run") {print $(i+1); exit}}')
+# Auto-derive sandbox name from the configured command if not set:
+# `sbx run <name>` or `sbx run claude --` (default name pattern is
+# claude-<workdir>). Prefer AGENT_CMD when present; otherwise fall back
+# to CLAUDE_CMD for legacy configs.
+_sandbox_cmd="${AGENT_CMD:-${CLAUDE_CMD:-}}"
+if [ -z "$SANDBOX_NAME" ] && [[ "$_sandbox_cmd" == *"sbx run"* ]]; then
+  arg=$(echo "$_sandbox_cmd" | awk '{for (i=1;i<=NF;i++) if ($i=="run") {print $(i+1); exit}}')
   if [ "$arg" = "claude" ] || [ -z "$arg" ]; then
     SANDBOX_NAME="claude-$(basename "$PWD")"
   else
     SANDBOX_NAME="$arg"
   fi
 fi
+unset _sandbox_cmd
 
 cmd_status() {
   # sbx exec attaches to the terminal and leaves it in raw mode (no
@@ -374,7 +493,9 @@ cmd_status() {
     sbx_out=$(sbx exec "$SANDBOX_NAME" -- ps -eo pid,etime,time,comm,args </dev/null 2>/dev/null)
     # Force CR-on-LF + cooked mode back on. sbx exec leaves the tty
     # raw (no onlcr) regardless of what zsh had set before.
-    [ -t 1 ] && stty sane 2>/dev/null || true
+    if [ -t 1 ]; then
+      stty sane 2>/dev/null || true
+    fi
   fi
 
   echo "--- host ralph processes ---"
@@ -447,10 +568,192 @@ extract_issue_from_jsonl() {
     | grep -oE 'Picked issue: #[0-9]+' | grep -oE '[0-9]+' | head -1 || echo ""
 }
 
-extract_promise_from_jsonl() {
-  # Extract promise result (COMPLETE or BLOCKED) from JSONL file
+iteration_final_message_file() {
   local log_file="$1"
+  printf '%s\n' "${log_file%.jsonl}.final.txt"
+}
+
+extract_claude_final_message_from_jsonl() {
+  # Extract the last assistant text message from Claude stream-json output.
+  local log_file="$1"
+  jq -rs '
+    map(
+      select(.type == "assistant")
+      | [(.message.content // [])[] | select(.type == "text") | .text]
+      | join("\n")
+      | select(length > 0)
+    )
+    | last // empty
+  ' < "$log_file"
+}
+
+stream_claude_jsonl_pretty() {
+  jq -r '
+    if .type == "assistant" then
+      .message.content[]? | (
+        if .type == "text" then .text
+        elif .type == "tool_use" then "→ " + .name + " " + (((.input // {}) | tostring)[0:140])
+        else empty end)
+    elif .type == "result" then "● " + (.subtype // "result")
+    else empty end
+    | select(. != "") | gsub("\n"; "\r\n") | . + "\r\n\n"'
+}
+
+stream_codex_jsonl_pretty() {
+  jq -r '
+    if .type == "item.completed" and .item.type == "agent_message" then
+      .item.text // empty
+    elif .type == "item.started" and .item.type == "command_execution" then
+      "→ " + (.item.command // "command")
+    elif .type == "item.completed" and .item.type == "command_execution" then
+      "● command exit " + ((.item.exit_code // .item.exitCode // 0) | tostring)
+    elif .type == "item.completed" and .item.type == "web_search" then
+      "→ web_search"
+    elif .type == "item.completed" and .item.type == "mcp_tool_call" then
+      "→ mcp " + (.item.server // "") + "/" + (.item.tool // "")
+    elif .type == "item.completed" and .item.type == "plan_update" then
+      "→ plan updated"
+    else empty end
+    | select(. != "") | gsub("\n"; "\r\n") | . + "\r\n\n"'
+}
+
+stream_pi_jsonl_pretty() {
+  jq -r '
+    if .type == "message_update" and .assistantMessageEvent.type == "text_delta" then
+      .assistantMessageEvent.delta // empty
+    elif .type == "tool_execution_start" then
+      "→ " + (.toolName // "tool") + " " + (((.args // {}) | tostring)[0:140])
+    elif .type == "tool_execution_end" then
+      if .isError then
+        "● " + (.toolName // "tool") + " error"
+      else
+        "● " + (.toolName // "tool") + " done"
+      end
+    elif .type == "auto_retry_start" then
+      "→ auto-retry " + ((.attempt // 0) | tostring) + "/" + ((.maxAttempts // 0) | tostring)
+    elif .type == "compaction_start" then
+      "→ compaction " + (.reason // "manual")
+    else empty end
+    | select(. != "") | gsub("\n"; "\r\n") | . + "\r\n\n"'
+}
+
+extract_pi_final_message_from_jsonl() {
+  # Prefer canonical final assistant message events; fall back to reconstructing
+  # the last assistant text stream from text_delta events when those are absent.
+  local log_file="$1"
+  jq -rs '
+    def text_from_content:
+      [(.content // [])[] | select(.type == "text") | .text] | join("\n");
+    def canonical_text($event):
+      if $event.type == "message_end" then
+        ($event.message // {})
+      elif $event.type == "turn_end" then
+        ($event.message // {})
+      elif $event.type == "message_update" and (($event.assistantMessageEvent.type // "") == "done") then
+        ($event.assistantMessageEvent.message // {})
+      else
+        {}
+      end
+      | select((.role // "") == "assistant")
+      | text_from_content
+      | select(length > 0);
+    def delta_text($segments):
+      $segments
+      | sort_by(.idx)
+      | map(.text)
+      | join("");
+
+    reduce .[] as $event (
+      {canonical: [], current: {active: false, segments: []}, fallback: []};
+      if $event.type == "message_start" then
+        if (($event.message.role // "") == "assistant") then
+          .current = {active: true, segments: []}
+        else
+          .current = {active: false, segments: []}
+        end
+      elif $event.type == "message_update" and .current.active and (($event.assistantMessageEvent.type // "") == "text_delta") then
+        .current.segments += [{
+          idx: ($event.assistantMessageEvent.contentIndex // 0),
+          text: ($event.assistantMessageEvent.delta // "")
+        }]
+      elif $event.type == "message_end" then
+        if .current.active then
+          .fallback += [delta_text(.current.segments)]
+        else
+          .
+        end
+        | .current = {active: false, segments: []}
+        | .canonical += [canonical_text($event)]
+      elif $event.type == "agent_end" then
+        if .current.active then
+          .fallback += [delta_text(.current.segments)]
+        else
+          .
+        end
+        | .current = {active: false, segments: []}
+      elif $event.type == "turn_end" then
+        .canonical += [canonical_text($event)]
+      elif $event.type == "message_update" and (($event.assistantMessageEvent.type // "") == "done") then
+        .canonical += [canonical_text($event)]
+      else
+        .
+      end
+    )
+    | ((.canonical | map(select(length > 0)) | last) // (.fallback | map(select(length > 0)) | last) // empty)
+  ' < "$log_file"
+}
+
+write_final_message_artifact() {
+  local agent_cli="$1" log_file="$2" final_file="$3"
+
+  case "$agent_cli" in
+    claude)
+      extract_claude_final_message_from_jsonl "$log_file" > "$final_file"
+      ;;
+    codex)
+      [ -f "$final_file" ] || {
+        echo "ralph: codex did not write final message artifact: $final_file" >&2
+        return 1
+      }
+      ;;
+    pi)
+      extract_pi_final_message_from_jsonl "$log_file" > "$final_file"
+      ;;
+    *)
+      echo "ralph: no final-message writer for AGENT_CLI=$agent_cli" >&2
+      return 1
+      ;;
+  esac
+}
+
+extract_promise_from_final_message_file() {
+  local final_file="$1"
+  [ -f "$final_file" ] || return 0
+
   local result
+  result=$(cat "$final_file")
+  if [[ "$result" == *"<promise>COMPLETE</promise>"* ]]; then
+    echo "COMPLETE"
+  elif [[ "$result" == *"<promise>BLOCKED</promise>"* ]]; then
+    echo "BLOCKED"
+  else
+    echo ""
+  fi
+}
+
+extract_promise_from_iteration_artifacts() {
+  # Prefer the adapter's final-message artifact; fall back to legacy JSONL
+  # result parsing so existing logs remain inspectable.
+  local log_file="$1"
+  local final_file promise result
+
+  final_file=$(iteration_final_message_file "$log_file")
+  promise=$(extract_promise_from_final_message_file "$final_file")
+  if [ -n "$promise" ]; then
+    echo "$promise"
+    return 0
+  fi
+
   result=$(jq -r 'select(.type == "result").result // empty' < "$log_file")
   if [[ "$result" == *"<promise>COMPLETE</promise>"* ]]; then
     echo "COMPLETE"
@@ -479,6 +782,7 @@ cmd_inspect_list() {
   # bash 3 compat (no mapfile) and set -u safe (guard empty array)
   local files=()
   local f
+  # shellcheck disable=SC2012
   while IFS= read -r f; do
     [ -n "$f" ] && files+=("$f")
   done < <(ls -1 "$logs_dir"/iter-* 2>/dev/null | sort -V)
@@ -491,10 +795,12 @@ cmd_inspect_list() {
     basename=$(basename "$log_file")
     # Extract iteration number from iter-N-timestamp
     local iter_num
+    # shellcheck disable=SC2001
     iter_num=$(echo "$basename" | sed 's/iter-\([0-9]*\)-.*/\1/')
 
     # Extract timestamp from filename (second component)
     local ts
+    # shellcheck disable=SC2001
     ts=$(echo "$basename" | sed 's/iter-[0-9]*-\([0-9]*\).jsonl/\1/')
     if [ -n "$ts" ] && [ "$ts" != "$basename" ]; then
       # Convert Unix timestamp to readable format
@@ -502,7 +808,7 @@ cmd_inspect_list() {
     fi
 
     local promise issue
-    promise=$(extract_promise_from_jsonl "$log_file")
+    promise=$(extract_promise_from_iteration_artifacts "$log_file")
     issue=$(extract_issue_from_jsonl "$log_file")
 
     printf '%6s  %-19s  %7s  %s\n' "$iter_num" "$ts" "$promise" "${issue:-—}"
@@ -526,6 +832,7 @@ cmd_inspect_replay() {
 
   # Find the log file for this iteration
   local log_file
+  # shellcheck disable=SC2012
   log_file=$(ls "$logs_dir"/iter-"$iter_num"-* 2>/dev/null | head -1)
   if [ -z "$log_file" ] || [ ! -f "$log_file" ]; then
     echo "ralph: iteration $iter_num not found in $logs_dir"
@@ -534,7 +841,7 @@ cmd_inspect_replay() {
 
   # Extract promise result for header
   local promise
-  promise=$(extract_promise_from_jsonl "$log_file")
+  promise=$(extract_promise_from_iteration_artifacts "$log_file")
   local issue
   issue=$(extract_issue_from_jsonl "$log_file")
 
@@ -610,7 +917,7 @@ cmd_inspect_tail() {
       # Check if iteration has completed and we haven't printed promise yet
       if [ ! -f "$promise_file" ]; then
         local promise
-        promise=$(extract_promise_from_jsonl "$current_iter")
+        promise=$(extract_promise_from_iteration_artifacts "$current_iter")
         if [ -n "$promise" ]; then
           echo "Promise: $promise"
           echo
@@ -763,8 +1070,10 @@ ls_issues_gh() {
   all_blocked_val=$(cat "$_ab_tmp"); rm -f "$_ab_tmp"
 
   local open_json closed_json
+  # shellcheck disable=SC2086
   open_json=$(gh issue list $repo_flag --milestone "$milestone" --state open \
               --json number,title,labels,body --limit 200 2>/dev/null) || open_json="[]"
+  # shellcheck disable=SC2086
   closed_json=$(gh issue list $repo_flag --milestone "$milestone" --state closed \
                 --json number,title --limit 200 2>/dev/null) || closed_json="[]"
 
@@ -856,6 +1165,7 @@ cmd_recover() {
     local repo_flag=""
     [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
     local issue_state
+    # shellcheck disable=SC2086
     issue_state=$(gh issue view "$baseline_issue" $repo_flag --json state -q .state 2>/dev/null)
     if [ "$issue_state" != "OPEN" ]; then
       echo "ralph: warning: issue #$baseline_issue is not OPEN (state: $issue_state)" >&2
@@ -902,6 +1212,7 @@ check_main_branch_guard() {
   if [ "$BACKEND" = "github" ]; then
     local repo_flag=""
     [ -n "$GH_REPO" ] && repo_flag="--repo $GH_REPO"
+    # shellcheck disable=SC2086
     default_branch=$(gh api $repo_flag repos/:owner/:repo --jq '.default_branch' 2>/dev/null)
   fi
 
@@ -965,14 +1276,25 @@ check_clean_tree_guard() {
 cmd_ls() {
   local arg="${1:-}"
   if [ "$BACKEND" = "github" ]; then
-    [ -n "$arg" ] && ls_issues_gh "$arg" || ls_milestones
+    if [ -n "$arg" ]; then
+      ls_issues_gh "$arg"
+    else
+      ls_milestones
+    fi
   else
-    [ -n "$arg" ] && ls_issues_fs "$arg" || ls_prds
+    if [ -n "$arg" ]; then
+      ls_issues_fs "$arg"
+    else
+      ls_prds
+    fi
   fi
 }
 
 # --- subcommands ------------------------------------------------------
 iterate_once() {
+  resolve_agent_cli_config || return 1
+  resolve_model_config "$RESOLVED_AGENT_CLI" || return 1
+
   # Preflight guard: refuse to run on main/default branch
   check_main_branch_guard || return 11
   # Preflight guard: refuse to run with a dirty/unpushed tree (false-green hazard, ADR-0010)
@@ -1025,17 +1347,27 @@ iterate_once() {
 
   local result rc
   if [ "$interactive" = 1 ]; then
+    if [ "$RESOLVED_AGENT_CLI" != "claude" ]; then
+      echo "ralph: AGENT_CLI=$RESOLVED_AGENT_CLI is configured, but interactive execution is not implemented for this adapter yet" >&2
+      return 1
+    fi
     # Interactive TUI — no -p, no capture. Promise auto-detection disabled.
-    $CLAUDE_CMD --model sonnet --dangerously-skip-permissions "$prompt"
+    if [ -n "$RESOLVED_MODEL" ]; then
+      # shellcheck disable=SC2086
+      $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS --model "$RESOLVED_MODEL" --dangerously-skip-permissions "$prompt"
+    else
+      # shellcheck disable=SC2086
+      $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS --dangerously-skip-permissions "$prompt"
+    fi
     rc=$?
     if [ $rc -ne 0 ]; then
-      echo "ralph: claude invocation failed (rc=$rc)" >&2
+      echo "ralph: $RESOLVED_AGENT_CLI invocation failed (rc=$rc)" >&2
       return 1
     fi
     return 0
   fi
 
-  # Non-interactive: use stream-json format, write JSONL logs, detect promise from file
+  # Non-interactive: write JSONL logs, detect promise from the final-message artifact
   command -v jq >/dev/null 2>&1 || { echo "ralph: 'jq' not found" >&2; return 1; }
 
   local scope
@@ -1048,59 +1380,94 @@ iterate_once() {
   local logs_dir=".ralph-logs/$scope"
   mkdir -p "$logs_dir" || { echo "ralph: failed to create logs directory" >&2; return 1; }
 
-  # Record the iteration baseline before invoking Claude (both backends).
+  # Record the iteration baseline before invoking the agent CLI (both backends).
   record_baseline "$scope" "$picked_issue"
 
   # Create session marker (PID file) and set up cleanup trap
   local running_file="$logs_dir/running"
   echo "$$" > "$running_file" || { echo "ralph: failed to create running file" >&2; return 1; }
-  trap "rm -f '$running_file'" EXIT
+  RALPH_RUNNING_FILE="$running_file"
+  trap 'rm -f -- "$RALPH_RUNNING_FILE"' EXIT
 
-  local ts iter_num log_file
+  local ts iter_num log_file final_file
   ts=$(date +%s)
-  iter_num=$(ls "$logs_dir"/iter-* 2>/dev/null | wc -l | awk '{print $1+1}')
+  iter_num=$(find "$logs_dir" -maxdepth 1 -type f -name 'iter-*.jsonl' 2>/dev/null | wc -l | awk '{print $1+1}')
   log_file="$logs_dir/iter-${iter_num}-${ts}.jsonl"
+  final_file=$(iteration_final_message_file "$log_file")
 
-  # Manifest: announce what this iteration is about to do before claude streams.
+  # Manifest: announce what this iteration is about to do before the agent streams.
   printf '\n── ralph iteration %s ─────────────────────────────\n' "$iter_num"
   printf '  scope:  %s\n' "$scope"
-  printf '  issue:  %s\n' "${picked_issue:-(claude picks)}"
-  printf '  model:  %s\n' "$MODEL"
+  printf '  issue:  %s\n' "${picked_issue:-(agent picks)}"
+  printf '  agent:  %s\n' "$RESOLVED_AGENT_CLI"
+  printf '  model:  %s\n' "$(agent_model_manifest_value)"
   printf '  branch: %s\n' "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo n/a)"
   printf '  log:    %s\n' "$log_file"
   printf '────────────────────────────────────────────────────\n\n'
 
-  # Stream live text output to terminal while writing raw JSONL to file
-  $CLAUDE_CMD --output-format stream-json --verbose --effort low --model "$MODEL" --dangerously-skip-permissions -p "$prompt" 2>&1 \
-    | grep --line-buffered '^{' \
-    | tee "$log_file" \
-    | jq -r '
-        if .type == "assistant" then
-          .message.content[]? | (
-            if .type == "text" then .text
-            elif .type == "tool_use" then "→ " + .name + " " + (((.input // {}) | tostring)[0:140])
-            else empty end)
-        elif .type == "result" then "● " + (.subtype // "result")
-        else empty end
-        | select(. != "") | gsub("\n"; "\r\n") | . + "\r\n\n"'
-  rc=${PIPESTATUS[0]}
-  if [ $rc -ne 0 ]; then
-    echo "ralph: claude invocation failed (rc=$rc)" >&2
+  case "$RESOLVED_AGENT_CLI" in
+    claude)
+      # Stream live text output to terminal while writing raw JSONL to file.
+      # shellcheck disable=SC2086
+      $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS --output-format stream-json --verbose --effort low --model "$RESOLVED_MODEL" --dangerously-skip-permissions -p "$prompt" 2>&1 \
+        | grep --line-buffered '^{' \
+        | tee "$log_file" \
+        | stream_claude_jsonl_pretty
+      rc=${PIPESTATUS[0]}
+      ;;
+    codex)
+      # Use Codex native stdin-prompt mode (`exec -`), JSONL stdout, and native
+      # final-message output file so the artifact contract stays adapter-agnostic.
+      # shellcheck disable=SC2086
+      printf '%s' "$prompt" | $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS exec --json --output-last-message "$final_file" --ask-for-approval never --model "$RESOLVED_MODEL" - \
+        | tee "$log_file" \
+        | stream_codex_jsonl_pretty
+      rc=${PIPESTATUS[1]}
+      ;;
+    pi)
+      # Pi's documented JSON mode streams session events to stdout. Keep project
+      # inputs enabled in non-interactive mode and avoid persisting provider sessions.
+      if [ -n "$RESOLVED_MODEL" ]; then
+        # shellcheck disable=SC2086
+        $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS --mode json --approve --no-session --model "$RESOLVED_MODEL" "$prompt" 2>&1 \
+          | tee "$log_file" \
+          | stream_pi_jsonl_pretty
+      else
+        # shellcheck disable=SC2086
+        $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS --mode json --approve --no-session "$prompt" 2>&1 \
+          | tee "$log_file" \
+          | stream_pi_jsonl_pretty
+      fi
+      rc=${PIPESTATUS[0]}
+      ;;
+    *)
+      echo "ralph: AGENT_CLI=$RESOLVED_AGENT_CLI is configured, but non-interactive execution is not implemented for this adapter yet" >&2
+      return 1
+      ;;
+  esac
+  if [ "$rc" -ne 0 ]; then
+    echo "ralph: $RESOLVED_AGENT_CLI invocation failed (rc=$rc)" >&2
     return 1
   fi
 
-  # Detect promise from the JSONL file
-  result=$(jq -r 'select(.type == "result").result // empty' < "$log_file")
+  if ! write_final_message_artifact "$RESOLVED_AGENT_CLI" "$log_file" "$final_file"; then
+    echo "ralph: failed to write final assistant message artifact" >&2
+    return 1
+  fi
+
+  # Detect promise from the final-message artifact (legacy JSONL fallback for
+  # older logs stays inside the helper).
+  result=$(extract_promise_from_iteration_artifacts "$log_file")
   if [ -z "$result" ]; then
     return 0
   fi
 
-  if [[ "$result" == *"<promise>COMPLETE</promise>"* ]]; then
+  if [ "$result" = "COMPLETE" ]; then
     [ "$BACKEND" = "github" ] && close_milestone_gh "$milestone"
     echo "ralph: scope '$scope' complete."
     return 20
   fi
-  if [[ "$result" == *"<promise>BLOCKED</promise>"* ]]; then
+  if [ "$result" = "BLOCKED" ]; then
     echo "ralph: scope '$scope' blocked. Human needed." >&2
     return 21
   fi

@@ -144,9 +144,6 @@ test_baseline_overwrite() {
 
   # Record first baseline
   record_baseline "$scope" "issue-1"
-  local first_ts
-  first_ts=$BASELINE_TIMESTAMP 2>/dev/null || true
-
   # Sleep a bit to ensure timestamp difference
   sleep 0.1
 

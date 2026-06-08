@@ -4,9 +4,10 @@
 
 ## Context
 
-Two ralph-adjacent Claude Code skills both lived in the personal `ai-skills`
-repo (symlinked into `~/.claude/skills`): `to-issues-gh` and the full 419-line
-`ralph-init` (`SKILL.md` + `recipes/dragonruby/`). Meanwhile this repo carried a
+Before ralph supported multiple Agent CLIs, two ralph-adjacent skills both
+lived in the personal `ai-skills` repo (symlinked into the legacy Claude skills
+location, `~/.claude/skills`): `to-issues-gh` and the full 419-line `ralph-init`
+(`SKILL.md` + `recipes/dragonruby/`). Meanwhile this repo carried a
 divergent 67-line stub `SKILL.md` and a duplicate (then staged-for-deletion)
 `recipes/`. So `ralph-init` was both *already homed in `ai-skills`* and drifting
 against a stub here.
@@ -54,5 +55,5 @@ The repo is canonical; the installed location is a symlink, never an edited copy
   `ln -sfn "$SRC_DIR/skills/ralph-init" "$HOME/.claude/skills/ralph-init"`.
 - Two ralph-flavored skills live in two homes by design — justified by the
   coupling line, not an inconsistency to fix.
-- Installing `ralph` on a host without Claude Code skips the symlink rather
-  than failing.
+- Installing `ralph` on a host without the legacy Claude skills directory skips
+  the symlink rather than failing.

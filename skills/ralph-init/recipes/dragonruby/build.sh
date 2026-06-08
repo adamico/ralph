@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
 # Build the `<repo>-dragonruby` sbx template (ADR-0016).
 #
-# Snapshots a `claude-code-docker` sandbox with CRuby 4.0.3 and the
-# project bundle pre-installed so ralph (ADR-0015) can run /lint
-# without per-iteration setup cost.
+# Snapshots an agent-specific sandbox template with CRuby 4.0.3 and the
+# project bundle pre-installed so ralph can run lint without per-iteration setup
+# cost. Default AGENT_CLI is codex, which starts from Docker's Codex sandbox
+# template; set AGENT_CLI=claude only for legacy Claude-oriented imports.
 #
 # Re-run any time .ruby-version, Gemfile, or system deps change.
 
 set -euo pipefail
 
-SANDBOX_NAME="${SANDBOX_NAME:-claude-locomotion}"
+AGENT_CLI="${AGENT_CLI:-codex}"
+case "$AGENT_CLI" in
+  codex|claude|pi) ;;
+  *)
+    echo "Error: unsupported AGENT_CLI '$AGENT_CLI' (expected codex, claude, or pi)." >&2
+    exit 1
+    ;;
+esac
+
+SANDBOX_NAME="${SANDBOX_NAME:-dragonruby}"
 TEMPLATE_TAG="${TEMPLATE_TAG:-dragonruby}"
 RUBY_VERSION="$(cat .ruby-version)"
 RUBY_INSTALL_VERSION="${RUBY_INSTALL_VERSION:-0.10.2}"
@@ -34,8 +44,8 @@ if sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$SANDBOX_NAME"; then
 fi
 
 if ! sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$SANDBOX_NAME"; then
-  echo ">> creating base sandbox"
-  sbx create --name "$SANDBOX_NAME" claude .
+  echo ">> creating base sandbox from $AGENT_CLI template"
+  sbx create --name "$SANDBOX_NAME" "$AGENT_CLI" .
 fi
 
 if [[ "$EXISTING_RUBY" == *"$RUBY_VERSION"* ]]; then
