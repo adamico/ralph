@@ -395,9 +395,26 @@ warn_legacy_claude_cmd_once() {
 }
 
 resolve_agent_cli_config() {
-  local cli="${AGENT_CLI:-}"
-  local cmd="${AGENT_CMD:-}"
-  local args="${AGENT_ARGS:-}"
+  local cli="${SELECTED_AGENT_CLI:-${DEFAULT_AGENT_CLI:-${AGENT_CLI:-}}}"
+  local cmd args
+
+  if [ -n "$cli" ]; then
+    local cmd_var="AGENT_CMD_${cli//-/_}"
+    local args_var="AGENT_ARGS_${cli//-/_}"
+    eval "cmd=\"\${$cmd_var:-}\""
+    eval "args=\"\${$args_var:-}\""
+
+    if [ -z "$cmd" ]; then
+      cmd="${AGENT_CMD:-}"
+    fi
+    if [ -z "$args" ]; then
+      args="${AGENT_ARGS:-}"
+    fi
+  else
+    cmd="${AGENT_CMD:-}"
+    args="${AGENT_ARGS:-}"
+  fi
+
   local legacy_cmd="${CLAUDE_CMD:-}"
 
   if [ -n "$cmd" ] && [ -z "$cli" ]; then
@@ -1302,6 +1319,44 @@ check_clean_tree_guard() {
   return 0
 }
 
+cmd_init() {
+  local conf_file=".ralph.conf"
+  echo "--- ralph init ---"
+  if [ -f "$conf_file" ]; then
+    echo "Found existing $conf_file."
+  else
+    echo "Creating new $conf_file."
+    echo "# Per-project config for ralph." > "$conf_file"
+  fi
+
+  echo
+  read -r -p "Enter Agent CLI name (e.g. claude, codex, rtk): " new_cli
+  if [ -z "$new_cli" ]; then
+    echo "Aborted."
+    return 1
+  fi
+
+  read -r -p "Enter the command to run (e.g. 'sbx run my-project -- claude' or 'rtk'): " new_cmd
+  read -r -p "Enter extra arguments (optional): " new_args
+
+  echo "" >> "$conf_file"
+  echo "AGENT_CMD_${new_cli//-/_}=\"$new_cmd\"" >> "$conf_file"
+  if [ -n "$new_args" ]; then
+    echo "AGENT_ARGS_${new_cli//-/_}=\"$new_args\"" >> "$conf_file"
+  fi
+
+  read -r -p "Make '$new_cli' the default Agent CLI? (y/n) [y]: " make_default
+  if [[ -z "$make_default" || "$make_default" == "y" || "$make_default" == "Y" ]]; then
+    sed -i.bak '/^DEFAULT_AGENT_CLI=/d' "$conf_file" 2>/dev/null || true
+    rm -f "$conf_file.bak" 2>/dev/null || true
+    echo "DEFAULT_AGENT_CLI=\"$new_cli\"" >> "$conf_file"
+  fi
+
+  echo
+  echo "Done! Configuration added to $conf_file."
+  return 0
+}
+
 cmd_ls() {
   local arg="${1:-}"
   if [ "$BACKEND" = "github" ]; then
@@ -1517,9 +1572,26 @@ iterate_once() {
 # Allow sourcing for testing (e.g. `. ralph; pick_next_issue ...`).
 (return 0 2>/dev/null) && return 0
 
+new_args=()
+SELECTED_AGENT_CLI=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --cli)
+      SELECTED_AGENT_CLI="$2"
+      shift 2
+      ;;
+    *)
+      new_args+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- "${new_args[@]}"
+
 [ $# -ge 1 ] || usage
 
 case "$1" in
+  init)   cmd_init;   exit $? ;;
   status) cmd_status; exit 0 ;;
   kill)   cmd_kill;   exit 0 ;;
   ls)     cmd_ls "${2:-}"; exit $? ;;

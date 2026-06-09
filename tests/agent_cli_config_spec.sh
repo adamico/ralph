@@ -56,8 +56,14 @@ assert_rc() {
 
 reset_agent_cfg() {
   AGENT_CLI=""
+  DEFAULT_AGENT_CLI=""
+  SELECTED_AGENT_CLI=""
   AGENT_CMD=""
   AGENT_ARGS=""
+  AGENT_CMD_codex=""
+  AGENT_ARGS_codex=""
+  AGENT_CMD_antigravity=""
+  AGENT_ARGS_antigravity=""
   CLAUDE_CMD=""
   MODEL=""
   MODEL_CLASS="low"
@@ -173,6 +179,27 @@ assert_rc "bad model_class config rc" 0 "$RUN_RC"
 run_capture resolve_model_config "$RESOLVED_AGENT_CLI"
 assert_rc "bad model_class rc" 1 "$RUN_RC"
 assert_contains "bad model_class message" "unsupported MODEL_CLASS 'medium'" "$RUN_OUT"
+
+reset_agent_cfg
+DEFAULT_AGENT_CLI="codex"
+AGENT_CMD_codex="/opt/codex"
+AGENT_ARGS_codex="--fast"
+run_capture resolve_agent_cli_config
+assert_rc "default prefixed rc" 0 "$RUN_RC"
+assert_eq "default prefixed cli" "codex" "$RESOLVED_AGENT_CLI"
+assert_eq "default prefixed cmd" "/opt/codex" "$RESOLVED_AGENT_CMD"
+assert_eq "default prefixed args" "--fast" "$RESOLVED_AGENT_ARGS"
+
+reset_agent_cfg
+SELECTED_AGENT_CLI="antigravity"
+DEFAULT_AGENT_CLI="codex"
+AGENT_CMD_antigravity="/opt/ag"
+AGENT_ARGS_antigravity="--hyper"
+run_capture resolve_agent_cli_config
+assert_rc "selected prefixed rc" 0 "$RUN_RC"
+assert_eq "selected prefixed cli" "antigravity" "$RESOLVED_AGENT_CLI"
+assert_eq "selected prefixed cmd" "/opt/ag" "$RESOLVED_AGENT_CMD"
+assert_eq "selected prefixed args" "--hyper" "$RESOLVED_AGENT_ARGS"
 
 echo
 echo "agent_cli_config_spec: $PASS passed, $FAIL failed"

@@ -5,6 +5,11 @@ description: Scaffold a .ralph.conf for the current repo. Detects primary langua
 
 # ralph-init
 
+> [!WARNING]
+> This AI skill is **deprecated**. Please use the native `ralph init` command instead, which is faster, local, and more robust.
+> 
+> If the user asks you to run this skill, instruct them to run `ralph init` in their terminal instead. Do not proceed with the flow below.
+
 ## Goal
 
 Create or update `.ralph.conf` so ralph can drain issues for this repo.

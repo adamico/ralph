@@ -188,11 +188,15 @@ saved_WARNED="${LEGACY_CLAUDE_CMD_WARNED:-0}"
 
 reset_agent_resolution_state() {
   AGENT_CLI="$saved_AGENT_CLI"
+  SELECTED_AGENT_CLI=""
+  DEFAULT_AGENT_CLI=""
   AGENT_CMD="$saved_AGENT_CMD"
   AGENT_ARGS="$saved_AGENT_ARGS"
+  AGENT_CMD_codex=""
+  AGENT_ARGS_codex=""
   CLAUDE_CMD="$saved_CLAUDE_CMD"
   MODEL="$saved_MODEL"
-  MODEL_CLASS="$saved_MODEL_CLASS"
+  MODEL_CLASS="${saved_MODEL_CLASS:-low}"
   LEGACY_CLAUDE_CMD_WARNED=0
   RESOLVED_AGENT_CLI=""
   RESOLVED_AGENT_CMD=""
@@ -222,6 +226,22 @@ test_agent_cli_new_config() {
   assert_eq "agent_config: model config resolves" "0" "$rc"
   assert_eq "agent_config: codex low -> gpt-5.4-mini" "gpt-5.4-mini" "$RESOLVED_MODEL"
   assert_eq "agent_config: codex low source" "model-class:low" "$RESOLVED_MODEL_SOURCE"
+}
+
+test_agent_cli_prefixed_config() {
+  reset_agent_resolution_state
+  SELECTED_AGENT_CLI="rtk"
+  # Use an allowed cli like codex to avoid "unsupported cli" error
+  SELECTED_AGENT_CLI="codex"
+  AGENT_CMD_codex="rtk"
+  AGENT_ARGS_codex="codex --fast"
+  
+  local rc
+  resolve_agent_cli_config >/dev/null 2>&1; rc=$?
+  assert_eq "prefixed_config: resolves" "0" "$rc"
+  assert_eq "prefixed_config: cli=codex" "codex" "$RESOLVED_AGENT_CLI"
+  assert_eq "prefixed_config: cmd prefixed" "rtk" "$RESOLVED_AGENT_CMD"
+  assert_eq "prefixed_config: args prefixed" "codex --fast" "$RESOLVED_AGENT_ARGS"
 }
 
 test_agent_cli_legacy_claude_mapping_warns_once() {
@@ -378,6 +398,7 @@ test_agent_cli_antigravity() {
 }
 
 test_agent_cli_new_config
+test_agent_cli_prefixed_config
 test_agent_cli_legacy_claude_mapping_warns_once
 test_agent_cli_new_command_beats_legacy
 test_agent_cli_explicit_model_override_and_pi_default
