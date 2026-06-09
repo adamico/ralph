@@ -477,6 +477,7 @@ resolve_model_config() {
       ;;
     antigravity)
       RESOLVED_MODEL="Gemini 3.5 Flash (Low)"
+      # shellcheck disable=SC2034
       RESOLVED_MODEL_SOURCE="model-class:$model_class"
       RESOLVED_MODEL_DISPLAY="Gemini 3.5 Flash (Low)"
       ;;
