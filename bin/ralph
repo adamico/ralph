@@ -423,9 +423,9 @@ resolve_agent_cli_config() {
   fi
 
   case "$cli" in
-    claude|codex|pi) ;;
+    claude|codex|pi|antigravity) ;;
     *)
-      echo "ralph: unsupported AGENT_CLI '$cli' (expected: claude, codex, pi)" >&2
+      echo "ralph: unsupported AGENT_CLI '$cli' (expected: claude, codex, pi, antigravity)" >&2
       return 1
       ;;
   esac
@@ -474,6 +474,11 @@ resolve_model_config() {
       # shellcheck disable=SC2034
       RESOLVED_MODEL_SOURCE="provider-default"
       RESOLVED_MODEL_DISPLAY="provider default (MODEL_CLASS=$model_class; ralph omits --model)"
+      ;;
+    antigravity)
+      RESOLVED_MODEL="Gemini 3.5 Flash (Low)"
+      RESOLVED_MODEL_SOURCE="model-class:$model_class"
+      RESOLVED_MODEL_DISPLAY="Gemini 3.5 Flash (Low)"
       ;;
   esac
   return 0

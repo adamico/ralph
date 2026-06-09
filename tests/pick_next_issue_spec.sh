@@ -352,6 +352,29 @@ test_agent_model_manifest_values() {
   # shellcheck disable=SC2034
   RESOLVED_MODEL_DISPLAY="haiku (explicit)"
   assert_eq "manifest_model: explicit text" "haiku (explicit)" "$(agent_model_manifest_value)"
+
+  RESOLVED_AGENT_CLI="antigravity"
+  RESOLVED_MODEL="Gemini 3.5 Flash (Low)"
+  RESOLVED_MODEL_SOURCE="model-class:low"
+  # shellcheck disable=SC2034
+  RESOLVED_MODEL_DISPLAY="Gemini 3.5 Flash (Low)"
+  assert_eq "manifest_model: antigravity text" "Gemini 3.5 Flash (Low)" "$(agent_model_manifest_value)"
+}
+
+test_agent_cli_antigravity() {
+  reset_agent_resolution_state
+  AGENT_CLI="antigravity"
+  AGENT_CMD="antigravity"
+  MODEL=""
+  MODEL_CLASS="low"
+
+  local rc
+  resolve_agent_cli_config >/dev/null 2>&1; rc=$?
+  assert_eq "antigravity: cli resolve succeeds" "0" "$rc"
+  resolve_model_config "$RESOLVED_AGENT_CLI" >/dev/null 2>&1; rc=$?
+  assert_eq "antigravity: model resolve succeeds" "0" "$rc"
+  assert_eq "antigravity: low model" "Gemini 3.5 Flash (Low)" "$RESOLVED_MODEL"
+  assert_eq "antigravity: model source" "model-class:low" "$RESOLVED_MODEL_SOURCE"
 }
 
 test_agent_cli_new_config
@@ -360,6 +383,7 @@ test_agent_cli_new_command_beats_legacy
 test_agent_cli_explicit_model_override_and_pi_default
 test_agent_cli_rejects_unsupported_names
 test_agent_model_manifest_values
+test_agent_cli_antigravity
 
 LEGACY_CLAUDE_CMD_WARNED="$saved_WARNED"
 

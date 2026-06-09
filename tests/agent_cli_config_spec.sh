@@ -112,6 +112,15 @@ assert_eq "pi model omitted" "" "$RESOLVED_MODEL"
 assert_eq "pi manifest value" "provider default (MODEL_CLASS=low; ralph omits --model)" "$(agent_model_manifest_value)"
 
 reset_agent_cfg
+AGENT_CLI="antigravity"
+run_capture resolve_agent_cli_config
+assert_rc "antigravity config rc" 0 "$RUN_RC"
+run_capture resolve_model_config "$RESOLVED_AGENT_CLI"
+assert_rc "antigravity model rc" 0 "$RUN_RC"
+assert_eq "antigravity low model" "Gemini 3.5 Flash (Low)" "$RESOLVED_MODEL"
+assert_eq "antigravity manifest value" "Gemini 3.5 Flash (Low)" "$(agent_model_manifest_value)"
+
+reset_agent_cfg
 AGENT_CLI="codex"
 MODEL="gpt-5.7-preview"
 run_capture resolve_agent_cli_config
