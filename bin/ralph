@@ -911,7 +911,7 @@ cmd_inspect_tail() {
   while [ -f "$running_file" ]; do
     # bash 3 compat: glob instead of mapfile
     local current_iter
-    for current_iter in "$logs_dir"/iter-* ; do
+    for current_iter in "$logs_dir"/iter-*.jsonl ; do
       [ -e "$current_iter" ] || continue
 
       # Extract iteration number

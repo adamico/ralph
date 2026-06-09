@@ -32,6 +32,18 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local label="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" != *"$needle"* ]]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("$label")
+    echo "FAIL: $label"
+    echo "  expected NOT to contain: '$needle'"
+  fi
+}
+
 assert_rc() {
   local label="$1" expected="$2" actual="$3"
   if [ "$expected" = "$actual" ]; then
@@ -138,6 +150,19 @@ mkdir -p .ralph-logs/m
 out=$(BACKEND=github cmd_inspect_tail m 2>&1); rc=$?
 assert_rc       "tail/no-running-rc"  1 "$rc"
 assert_contains "tail/no-running-msg" "no running session in scope 'm'" "$out"
+cd /; rm -rf "$ws"
+
+# --- case 11: tail ignores non-jsonl files (issue #59 regression) ---
+new_ws
+write_iter .ralph-logs/m 1 1609459200 COMPLETE 42
+echo "invalid json" > .ralph-logs/m/iter-1-1609459200.final.txt
+touch .ralph-logs/m/running
+# run tail in background, give it a moment to loop, then kill it
+(BACKEND=github cmd_inspect_tail m > out.log 2>&1 & pid=$!; sleep 0.5; kill $pid 2>/dev/null)
+out=$(cat out.log)
+assert_contains     "tail/bug59-starts" "tailing live session" "$out"
+assert_not_contains "tail/bug59-nojq"   "jq: parse error" "$out"
+assert_not_contains "tail/bug59-nobash" "integer expression expected" "$out"
 cd /; rm -rf "$ws"
 
 # --- summary ---
