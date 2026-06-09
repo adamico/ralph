@@ -24,7 +24,7 @@ See ADR-0001.
 handle the result (done / blocked / complete / error).
 
 **Agent CLI** — the command-line coding agent ralph invokes for an iteration.
-Claude Code, Codex, and Pi are supported implementations of this role; domain
+Claude Code, Codex, Pi, and Antigravity are supported implementations of this role; domain
 language should not treat any one implementation as synonymous with ralph itself.
 
 **Sandbox** — the isolated container an AFK iteration runs inside, wrapping the
