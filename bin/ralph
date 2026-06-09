@@ -231,23 +231,32 @@ Follow these priority rules (ADR-0015 style). Do not ask questions — act.
 
 1. Read issue #$issue_num via 'gh issue view $issue_num --json number,title,body,state,labels,milestone,comments' for the spec.
 2. Implement it. The test oracle (ADR-0008 model B) only sees PUSHED state, so the
-   ONLY valid sequence is: implement -> commit -> push -> run tests via: $TEST_CMD
-   Run $LINT_CMD. Never claim tests pass before you have pushed; a green from before
-   your push reflects stale origin, not your work (false green).
-3. On success (gate green AFTER your push): close the issue with
-   'gh issue close $issue_num --comment "ralph: done"',
-   append a one-paragraph entry to progress.txt, commit + push (code + progress).
-4. On failure (gate red after push, lint cannot pass, you give up): roll the branch
-   back to the iteration baseline so origin is green again — 'git reset --hard <baseline>
+   ONLY valid sequence is: implement -> commit -> push -> run tests via: $TEST_CMD.
+   Then run lint via: $LINT_CMD. Never claim tests pass before you have pushed; a
+   green from before your push reflects stale origin, not your work (false green).
+3. If tests are red after a push, diagnose and repair the failing tests in this iteration.
+   Commit + push the repair and re-run tests. Red pushed tests are the feedback loop;
+   do not create a separate issue or mark this issue blocked because tests are red.
+4. Treat lint separately from tests. If lint repair is focused and in-scope, fix it here,
+   commit + push, and re-run lint. If lint repair is broad, risky, or outside this issue's scope, create a separate lint remediation issue
+   in milestone '$milestone' with the '$GH_LABEL_READY' label and enough detail for HITL or another ralph session,
+   and mention that follow-up issue in the completion comment.
+5. On success (tests green AFTER your push, and lint either green or split into a separate
+   remediation issue): close the issue with a comment summarizing the result and any lint
+   follow-up issue, append a one-paragraph entry to progress.txt, commit + push (code + progress).
+6. Only use the failure/blocked path for genuine external blockers
+   (for example: missing dependency, impossible/contradictory acceptance criteria, unavailable
+   service, or a defect outside this issue's scope that you cannot safely fix here). Then roll
+   the branch back to the iteration baseline so origin is green again — 'git reset --hard <baseline>
    && git push --force-with-lease' where <baseline> is the SHA recorded at the start of
    this iteration (per ADR-0009; 'ralph recover' prints it). This drops your red commits,
    leaving NO red/WIP commits on origin.
    Then 'gh issue edit $issue_num --add-label "$GH_LABEL_BLOCKED" --remove-label "$GH_LABEL_READY"'
    and 'gh issue comment $issue_num --body "Blocked-reason: <why>"'.
    Leave the working tree clean and in sync with origin so the next iteration can start.
-5. If no ready issues remain in milestone '$milestone' but some are still open,
+7. If no ready issues remain in milestone '$milestone' but some are still open,
    output <promise>BLOCKED</promise> and stop.
-6. If every issue in milestone '$milestone' is closed, output
+8. If every issue in milestone '$milestone' is closed, output
    <promise>COMPLETE</promise> and stop.
 EOF
 }
@@ -285,13 +294,24 @@ Follow these priority rules (ADR-0015 style). Do not ask questions — act.
    file) and output <promise>COMPLETE</promise>.
 4. Otherwise implement the picked issue. The test oracle (ADR-0008 model B) only
    sees PUSHED state, so the ONLY valid sequence is: implement -> commit -> push
-   -> run tests via: $TEST_CMD. Run $LINT_CMD. Never claim tests pass before you
-   have pushed; a green from before your push reflects stale origin (false green).
-5. On success (gate green AFTER your push): set its header 'Status: done', append a
-   one-paragraph entry to progress.txt, commit + push (issue file + code + progress).
-   Do NOT write to $MARKER_FILE — it is ralph-owned state. Progress notes go in progress.txt only.
-6. On failure (gate red after push, lint cannot pass, you give up): roll the branch
-   back to the iteration baseline SHA so origin is green again (git reset --hard
+   -> run tests via: $TEST_CMD. Then run lint via: $LINT_CMD. Never claim tests
+   pass before you have pushed; a green from before your push reflects stale origin
+   (false green).
+5. If tests are red after a push, diagnose and repair the failing tests in this iteration.
+   Commit + push the repair and re-run tests. Red pushed tests are the feedback loop;
+   do not create a separate issue or mark this issue blocked because tests are red.
+6. Treat lint separately from tests. If lint repair is focused and in-scope, fix it here,
+   commit + push, and re-run lint. If lint repair is broad, risky, or outside this issue's scope, create a separate lint remediation issue
+   under $issues_dir with 'Status: ready', enough detail for HITL or another ralph session,
+   and mention that follow-up issue in progress.txt.
+7. On success (tests green AFTER your push, and lint either green or split into a separate
+   remediation issue): set its header 'Status: done', append a one-paragraph entry to
+   progress.txt, commit + push (issue file + code + progress). Do NOT write to
+   $MARKER_FILE — it is ralph-owned state. Progress notes go in progress.txt only.
+8. Only use the failure/blocked path for genuine external blockers
+   (for example: missing dependency, impossible/contradictory acceptance criteria, unavailable
+   service, or a defect outside this issue's scope that you cannot safely fix here). Then roll
+   the branch back to the iteration baseline SHA so origin is green again (git reset --hard
    <baseline> + force-with-lease push; per ADR-0009, 'ralph recover' prints it),
    then edit the issue header to 'Status: blocked', add a 'Blocked-reason:' line, and
    commit + push that header change with a [blocked] prefix. Leave the working tree
