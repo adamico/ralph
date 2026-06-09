@@ -745,6 +745,9 @@ write_final_message_artifact() {
     pi)
       extract_pi_final_message_from_jsonl "$log_file" > "$final_file"
       ;;
+    antigravity)
+      cp "$log_file" "$final_file"
+      ;;
     *)
       echo "ralph: no final-message writer for AGENT_CLI=$agent_cli" >&2
       return 1
@@ -1373,6 +1376,10 @@ iterate_once() {
 
   local result rc
   if [ "$interactive" = 1 ]; then
+    if [ "$RESOLVED_AGENT_CLI" = "antigravity" ]; then
+      echo "ralph: interactive execution is not supported for antigravity" >&2
+      return 1
+    fi
     if [ "$RESOLVED_AGENT_CLI" != "claude" ]; then
       echo "ralph: AGENT_CLI=$RESOLVED_AGENT_CLI is configured, but interactive execution is not implemented for this adapter yet" >&2
       return 1
@@ -1464,6 +1471,13 @@ iterate_once() {
           | tee "$log_file" \
           | stream_pi_jsonl_pretty
       fi
+      rc=${PIPESTATUS[0]}
+      ;;
+    antigravity)
+      # antigravity adapter: pipe `agy --dangerously-skip-permissions --model "$RESOLVED_MODEL" --print "$prompt"` directly to log
+      # shellcheck disable=SC2086
+      $RESOLVED_AGENT_CMD $RESOLVED_AGENT_ARGS --dangerously-skip-permissions --model "$RESOLVED_MODEL" --print "$prompt" 2>&1 \
+        | tee "$log_file"
       rc=${PIPESTATUS[0]}
       ;;
     *)

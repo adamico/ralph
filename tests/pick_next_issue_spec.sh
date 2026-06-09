@@ -1214,11 +1214,92 @@ MOCK_PI
     echo "FAIL: adapter_layout: pi layout"
   fi
 
+  rm -rf .ralph-logs invoked.txt pi-args.txt
+  MODEL=""
+
+  # Antigravity: direct output piping of agy command to log file and final file.
+  AGENT_CLI="antigravity"
+  AGENT_CMD="$script_dir/mock-agy"
+  AGENT_ARGS=""
+  MODEL=""
+  MODEL_CLASS="low"
+  cat > "$script_dir/mock-agy" <<MOCK_AGY
+#!/usr/bin/env bash
+set -eu
+
+printf '%s\n' "\$@" > "$repo_dir/agy-args.txt"
+echo "Antigravity final"
+echo "<promise>COMPLETE</promise>"
+MOCK_AGY
+  chmod +x "$script_dir/mock-agy"
+  output=$(iterate_once 2>&1); rc=$?
+  log_file=$(find .ralph-logs/.scratch/demo -type f -name 'iter-*.jsonl' | sort | head -1)
+  final_file=$(iteration_final_message_file "$log_file")
+  assert_eq "adapter_layout: antigravity rc" "20" "$rc"
+  assert_eq "adapter_layout: antigravity promise" "COMPLETE" "$(extract_promise_from_iteration_artifacts "$log_file")"
+  if [ -f "$log_file" ] && [ -f "$final_file" ] && grep -q 'Antigravity final' "$log_file" && grep -q 'Antigravity final' "$final_file"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("adapter_layout: antigravity layout")
+    echo "FAIL: adapter_layout: antigravity layout"
+  fi
+  local agy_args
+  agy_args=$(cat agy-args.txt)
+  if echo "$agy_args" | grep -q -- '--dangerously-skip-permissions' && echo "$agy_args" | grep -q -- '--model' && echo "$agy_args" | grep -q -- 'Gemini 3.5 Flash (Low)' && echo "$agy_args" | grep -q -- '--print'; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("adapter_layout: antigravity args mismatch")
+    echo "FAIL: adapter_layout: antigravity args mismatch: $agy_args"
+  fi
+
   cd / || true
   rm -rf "$test_dir" "$script_dir" "$sentinel_dir"
 }
 
 test_common_adapter_log_layouts
+
+# --- Antigravity interactive mode rejection tests ---
+test_antigravity_interactive_rejection() {
+  local test_dir sentinel_dir output rc
+  test_dir=$(mktemp -d)
+  sentinel_dir=$(mktemp -d)
+  cd "$test_dir" || exit 1
+  setup_adapter_regression_fixture "feature/antigravity-interactive"
+  write_invocation_sentinel "$sentinel_dir/sentinel-agent"
+
+  AGENT_CLI="antigravity"
+  AGENT_CMD="$sentinel_dir/sentinel-agent"
+  AGENT_ARGS=""
+  MODEL=""
+  MODEL_CLASS="low"
+
+  # Run iterate_once with -i flag for interactive mode
+  output=$(iterate_once -i 2>&1); rc=$?
+  assert_eq "antigravity_interactive: returns failure" "1" "$rc"
+  if echo "$output" | grep -q "interactive execution is not supported for antigravity"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("antigravity_interactive: wrong or missing error message")
+    echo "FAIL: antigravity_interactive: wrong or missing error message"
+    echo "$output"
+  fi
+
+  if [ -f invoked.txt ]; then
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("antigravity_interactive: adapter was invoked")
+    echo "FAIL: antigravity_interactive: adapter was invoked"
+  else
+    PASS=$((PASS+1))
+  fi
+
+  cd / || true
+  rm -rf "$test_dir" "$sentinel_dir"
+}
+
+test_antigravity_interactive_rejection
 
 # --- preflight guards before adapter invocation (issue #48) ---
 test_preflight_guards_block_all_adapters() {
@@ -1230,7 +1311,7 @@ test_preflight_guards_block_all_adapters() {
   setup_adapter_regression_fixture "main"
   write_invocation_sentinel "$sentinel_dir/sentinel-agent"
 
-  for cli in claude codex pi; do
+  for cli in claude codex pi antigravity; do
     AGENT_CLI="$cli"
     AGENT_CMD="$sentinel_dir/sentinel-agent"
     AGENT_ARGS=""
@@ -1258,7 +1339,7 @@ test_preflight_guards_block_all_adapters() {
   write_invocation_sentinel "$sentinel_dir/sentinel-agent"
   echo dirty > dirty.txt
 
-  for cli in claude codex pi; do
+  for cli in claude codex pi antigravity; do
     AGENT_CLI="$cli"
     AGENT_CMD="$sentinel_dir/sentinel-agent"
     AGENT_ARGS=""
