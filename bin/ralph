@@ -1319,14 +1319,67 @@ check_clean_tree_guard() {
   return 0
 }
 
+detect_test_cmd() {
+  if [ -f "package.json" ]; then
+    if grep -q '"test":' package.json; then echo "npm test"; return; fi
+    if grep -q '"vitest"' package.json; then echo "npx vitest run"; return; fi
+  fi
+  if [ -f "Makefile" ] && grep -q '^test:' Makefile; then echo "make test"; return; fi
+  if [ -f "pytest.ini" ] || ( [ -f "pyproject.toml" ] && grep -q 'pytest' pyproject.toml ); then echo "pytest"; return; fi
+  if [ -f "Cargo.toml" ]; then echo "cargo test"; return; fi
+  if [ -f "go.mod" ]; then echo "go test ./..."; return; fi
+  if [ -f "mix.exs" ]; then echo "mix test"; return; fi
+  if [ -f "build.gradle" ]; then echo "./gradlew test"; return; fi
+  if [ -f "pom.xml" ]; then echo "mvn test"; return; fi
+  if ls tests/*.sh >/dev/null 2>&1; then echo "bash tests/*.sh"; return; fi
+  if [ -x "run_tests" ]; then echo "./run_tests"; return; fi
+  echo ":"
+}
+
+detect_lint_cmd() {
+  if ls .eslintrc* >/dev/null 2>&1 || ( [ -f "package.json" ] && grep -q 'eslint' package.json ); then echo "npx eslint ."; return; fi
+  if [ -f "Makefile" ] && grep -q '^lint:' Makefile; then echo "make lint"; return; fi
+  if [ -f "ruff.toml" ] || ( [ -f "pyproject.toml" ] && grep -q 'ruff' pyproject.toml ); then echo "ruff check ."; return; fi
+  if [ -f ".flake8" ]; then echo "flake8 ."; return; fi
+  if [ -f "Cargo.toml" ]; then echo "cargo clippy"; return; fi
+  if ls bin/* tests/*.sh >/dev/null 2>&1; then echo "shellcheck bin/* tests/*.sh"; return; fi
+  echo ":"
+}
+
+detect_backend() {
+  if git remote -v 2>/dev/null | grep -q 'github\.com'; then
+    echo "github"
+  else
+    echo "fs"
+  fi
+}
+
 cmd_init() {
   local conf_file=".ralph.conf"
+  local is_new=0
   echo "--- ralph init ---"
   if [ -f "$conf_file" ]; then
     echo "Found existing $conf_file."
   else
     echo "Creating new $conf_file."
+    is_new=1
     echo "# Per-project config for ralph." > "$conf_file"
+  fi
+
+  if [ "$is_new" = 1 ] || ! grep -q '^BACKEND=' "$conf_file" 2>/dev/null; then
+    local default_backend
+    default_backend=$(detect_backend)
+
+    echo
+    read -r -p "Enter BACKEND for PRDs and issues (github/fs) [$default_backend]: " backend
+    backend="${backend:-$default_backend}"
+
+    if ! grep -q '^BACKEND=' "$conf_file" 2>/dev/null; then
+      echo "BACKEND=\"$backend\"" >> "$conf_file"
+    else
+      sed -i.bak "s|^BACKEND=.*|BACKEND=\"$backend\"|" "$conf_file" 2>/dev/null || true
+    fi
+    rm -f "$conf_file.bak" 2>/dev/null || true
   fi
 
   echo
@@ -1339,17 +1392,76 @@ cmd_init() {
   read -r -p "Enter the command to run (e.g. 'sbx run my-project -- claude' or 'rtk'): " new_cmd
   read -r -p "Enter extra arguments (optional): " new_args
 
-  echo "" >> "$conf_file"
-  echo "AGENT_CMD_${new_cli//-/_}=\"$new_cmd\"" >> "$conf_file"
-  if [ -n "$new_args" ]; then
-    echo "AGENT_ARGS_${new_cli//-/_}=\"$new_args\"" >> "$conf_file"
+  local existing_cmd=""
+  local existing_args=""
+  if [ -f "$conf_file" ]; then
+    existing_cmd=$(grep "^AGENT_CMD_${new_cli//-/_}=" "$conf_file" | head -n1 | cut -d= -f2- | sed 's/^"\(.*\)"$/\1/')
+    existing_args=$(grep "^AGENT_ARGS_${new_cli//-/_}=" "$conf_file" | head -n1 | cut -d= -f2- | sed 's/^"\(.*\)"$/\1/')
   fi
 
-  read -r -p "Make '$new_cli' the default Agent CLI? (y/n) [y]: " make_default
-  if [[ -z "$make_default" || "$make_default" == "y" || "$make_default" == "Y" ]]; then
-    sed -i.bak '/^DEFAULT_AGENT_CLI=/d' "$conf_file" 2>/dev/null || true
+  local do_write=1
+  if [ -n "$existing_cmd" ]; then
+    if [ "$existing_cmd" = "$new_cmd" ] && [ "$existing_args" = "$new_args" ]; then
+      do_write=0
+    else
+      read -r -p "AGENT_CMD_${new_cli//-/_} is already defined. Overwrite? (y/n) [n]: " overwrite_cmd
+      if [[ "$overwrite_cmd" != "y" && "$overwrite_cmd" != "Y" ]]; then
+        do_write=0
+      fi
+    fi
+  fi
+
+  if [ "$do_write" = 1 ]; then
+    if [ -n "$existing_cmd" ]; then
+      sed -i.bak "/^AGENT_CMD_${new_cli//-/_}=/d" "$conf_file" 2>/dev/null || true
+      sed -i.bak "/^AGENT_ARGS_${new_cli//-/_}=/d" "$conf_file" 2>/dev/null || true
+      rm -f "$conf_file.bak" 2>/dev/null || true
+    fi
+    echo "" >> "$conf_file"
+    echo "AGENT_CMD_${new_cli//-/_}=\"$new_cmd\"" >> "$conf_file"
+    if [ -n "$new_args" ]; then
+      echo "AGENT_ARGS_${new_cli//-/_}=\"$new_args\"" >> "$conf_file"
+    fi
+  fi
+
+  local existing_default=""
+  if [ -f "$conf_file" ]; then
+    existing_default=$(grep "^DEFAULT_AGENT_CLI=" "$conf_file" | head -n1 | cut -d= -f2- | sed 's/^"\(.*\)"$/\1/')
+  fi
+
+  if [ "$existing_default" != "$new_cli" ]; then
+    read -r -p "Make '$new_cli' the default Agent CLI? (y/n) [y]: " make_default
+    if [[ -z "$make_default" || "$make_default" == "y" || "$make_default" == "Y" ]]; then
+      sed -i.bak '/^DEFAULT_AGENT_CLI=/d' "$conf_file" 2>/dev/null || true
+      rm -f "$conf_file.bak" 2>/dev/null || true
+      echo "DEFAULT_AGENT_CLI=\"$new_cli\"" >> "$conf_file"
+    fi
+  fi
+
+  if [ "$is_new" = 1 ] || ! grep -q '^TEST_CMD=' "$conf_file" 2>/dev/null; then
+    local default_test default_lint
+    default_test=$(detect_test_cmd)
+    default_lint=$(detect_lint_cmd)
+
+    echo
+    read -r -p "Enter TEST_CMD [$default_test]: " test_cmd
+    test_cmd="${test_cmd:-$default_test}"
+
+    read -r -p "Enter LINT_CMD [$default_lint]: " lint_cmd
+    lint_cmd="${lint_cmd:-$default_lint}"
+
+    if ! grep -q '^TEST_CMD=' "$conf_file" 2>/dev/null; then
+      echo "TEST_CMD=\"$test_cmd\"" >> "$conf_file"
+    else
+      sed -i.bak "s|^TEST_CMD=.*|TEST_CMD=\"$test_cmd\"|" "$conf_file" 2>/dev/null || true
+    fi
+
+    if ! grep -q '^LINT_CMD=' "$conf_file" 2>/dev/null; then
+      echo "LINT_CMD=\"$lint_cmd\"" >> "$conf_file"
+    else
+      sed -i.bak "s|^LINT_CMD=.*|LINT_CMD=\"$lint_cmd\"|" "$conf_file" 2>/dev/null || true
+    fi
     rm -f "$conf_file.bak" 2>/dev/null || true
-    echo "DEFAULT_AGENT_CLI=\"$new_cli\"" >> "$conf_file"
   fi
 
   echo
