@@ -13,16 +13,11 @@ mkdir -p "$DEST"
 ln -sfn "$SRC_DIR/bin/ralph" "$DEST/ralph"
 echo "linked: $DEST/ralph -> $SRC_DIR/bin/ralph"
 
-# Symlink tool-coupled skills into Claude Code (ADR-0003), only if present.
-SKILLS_DIR="$HOME/.claude/skills"
-if [ -d "$SKILLS_DIR" ]; then
-  LINK="$SKILLS_DIR/ralph-init"
-  # ln -sfn won't replace a real (non-symlink) dir left by a prior hand-copy;
-  # remove it first so the link always points at this repo.
-  [ -e "$LINK" ] && [ ! -L "$LINK" ] && rm -rf "$LINK"
-  ln -sfn "$SRC_DIR/skills/ralph-init" "$LINK"
-  echo "linked: $LINK -> $SRC_DIR/skills/ralph-init"
-fi
+RALPH_RECIPES="$HOME/.ralph/recipes"
+mkdir -p "$HOME/.ralph"
+[ -e "$RALPH_RECIPES" ] && [ ! -L "$RALPH_RECIPES" ] && rm -rf "$RALPH_RECIPES"
+ln -sfn "$SRC_DIR/recipes" "$RALPH_RECIPES"
+echo "linked: $RALPH_RECIPES -> $SRC_DIR/recipes"
 
 case ":$PATH:" in
   *":$DEST:"*) ;;

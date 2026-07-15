@@ -31,9 +31,7 @@ language should not treat any one implementation as synonymous with ralph itself
 entire Agent CLI invocation. One run = one sandbox = one engine. Named
 `<repo>-<console>` for engine ports.
 
-**Recipe** — a bundled, reusable setup for a given engine (sandbox build +
-test harness + `.ralph.conf` shape) that `ralph-init` instantiates so a new
-port does not re-derive it. Classified by **tier**.
+**Recipe** — a bundled, reusable setup stored in `~/.ralph/recipes/` that `ralph init` uses to configure an engagement. Split into **Environment Recipes** (sandbox build, test harness, `TEST_CMD`/`LINT_CMD`) and **Agent Recipes** (`AGENT_CLI`, `AGENT_CMD`, `MODEL_CLASS`). Merged to create `.ralph.conf`.
 
 **Tier** — how mature a recipe is: *mature-external* (imported from a proven
 repo, e.g. dragonruby from `adamico/locomotion`), *standard* (e.g. littlejs

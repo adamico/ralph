@@ -6,6 +6,7 @@ set -uo pipefail
 usage() {
   cat <<EOF
 Usage:
+  ralph init                         # interactive setup: pick environment + agent recipe, write .ralph.conf
   ralph once [-i] [<milestone>]      # one iteration; -i runs legacy interactive mode (milestone required for github backend)
   ralph run <N> [<milestone>]        # up to N iterations, halts on COMPLETE/BLOCKED
   ralph ls [<prd|milestone>]         # list PRDs/milestones or show issue queue
@@ -1382,86 +1383,154 @@ cmd_init() {
     rm -f "$conf_file.bak" 2>/dev/null || true
   fi
 
-  echo
-  read -r -p "Enter Agent CLI name (e.g. claude, codex, rtk): " new_cli
-  if [ -z "$new_cli" ]; then
-    echo "Aborted."
-    return 1
-  fi
-
-  read -r -p "Enter the command to run (e.g. 'sbx run my-project -- claude' or 'rtk'): " new_cmd
-  read -r -p "Enter extra arguments (optional): " new_args
-
-  local existing_cmd=""
-  local existing_args=""
-  if [ -f "$conf_file" ]; then
-    existing_cmd=$(grep "^AGENT_CMD_${new_cli//-/_}=" "$conf_file" | head -n1 | cut -d= -f2- | sed 's/^"\(.*\)"$/\1/')
-    existing_args=$(grep "^AGENT_ARGS_${new_cli//-/_}=" "$conf_file" | head -n1 | cut -d= -f2- | sed 's/^"\(.*\)"$/\1/')
-  fi
-
-  local do_write=1
-  if [ -n "$existing_cmd" ]; then
-    if [ "$existing_cmd" = "$new_cmd" ] && [ "$existing_args" = "$new_args" ]; then
-      do_write=0
-    else
-      read -r -p "AGENT_CMD_${new_cli//-/_} is already defined. Overwrite? (y/n) [n]: " overwrite_cmd
-      if [[ "$overwrite_cmd" != "y" && "$overwrite_cmd" != "Y" ]]; then
-        do_write=0
+  local recipes_dir="$HOME/.ralph/recipes"
+  
+  if [ "$is_new" = 1 ] || ! grep -q '^TEST_CMD=' "$conf_file" 2>/dev/null; then
+    echo
+    echo "--- Environment Setup ---"
+    local env_choice=""
+    
+    local detected=""
+    if [ -d "dragonruby-macos" ] || [ -f "app/main.rb" ]; then detected="dragonruby"; fi
+    if grep -q "littlejsengine" package.json 2>/dev/null; then detected="littlejs"; fi
+    
+    if [ -n "$detected" ] && [ -d "$recipes_dir/environments/$detected" ]; then
+      read -r -p "Detected '$detected' environment. Use this recipe? (y/n) [y]: " use_det
+      if [[ -z "$use_det" || "$use_det" == "y" || "$use_det" == "Y" ]]; then
+        env_choice="$detected"
       fi
     fi
+    
+    if [ -z "$env_choice" ] && [ -d "$recipes_dir/environments" ]; then
+      echo "Available environment recipes:"
+      ls -1 "$recipes_dir/environments" | nl -w2 -s') '
+      read -r -p "Select environment (or press Enter for manual/auto-detect): " env_idx
+      if [[ "$env_idx" =~ ^[0-9]+$ ]]; then
+        env_choice=$(ls -1 "$recipes_dir/environments" | sed -n "${env_idx}p")
+      elif [ -n "$env_idx" ]; then
+        env_choice="$env_idx"
+      fi
+    fi
+
+    if [ -n "$env_choice" ] && [ -d "$recipes_dir/environments/$env_choice" ]; then
+      echo "Applying environment recipe: $env_choice"
+      if [ -f "$recipes_dir/environments/$env_choice/env.conf" ]; then
+        cat "$recipes_dir/environments/$env_choice/env.conf" >> "$conf_file"
+      fi
+      find "$recipes_dir/environments/$env_choice" -type f ! -name "*.md" ! -name "*.conf" | while read -r f; do
+        rel_path="${f#$recipes_dir/environments/$env_choice/}"
+        mkdir -p "$(dirname "$rel_path")"
+        cp -n "$f" "$rel_path" || true
+      done
+    else
+      local default_test default_lint
+      default_test=$(detect_test_cmd)
+      default_lint=$(detect_lint_cmd)
+
+      read -r -p "Enter TEST_CMD [$default_test]: " test_cmd
+      test_cmd="${test_cmd:-$default_test}"
+
+      read -r -p "Enter LINT_CMD [$default_lint]: " lint_cmd
+      lint_cmd="${lint_cmd:-$default_lint}"
+
+      if ! grep -q '^TEST_CMD=' "$conf_file" 2>/dev/null; then echo "TEST_CMD=\"$test_cmd\"" >> "$conf_file"; fi
+      if ! grep -q '^LINT_CMD=' "$conf_file" 2>/dev/null; then echo "LINT_CMD=\"$lint_cmd\"" >> "$conf_file"; fi
+    fi
   fi
 
-  if [ "$do_write" = 1 ]; then
+  echo
+  echo "--- Agent Setup ---"
+  local agent_choice=""
+  if [ -d "$recipes_dir/agents" ]; then
+    echo "Available agent recipes:"
+    ls -1 "$recipes_dir/agents" | nl -w2 -s') '
+    read -r -p "Select agent recipe: " agent_idx
+    if [[ "$agent_idx" =~ ^[0-9]+$ ]]; then
+      agent_choice=$(ls -1 "$recipes_dir/agents" | sed -n "${agent_idx}p")
+    elif [ -n "$agent_idx" ]; then
+      agent_choice="$agent_idx"
+    fi
+  fi
+
+  local new_cli="" new_cmd="" new_args="" new_model_class=""
+  if [ -n "$agent_choice" ] && [ -f "$recipes_dir/agents/$agent_choice/agent.conf" ]; then
+    echo "Applying agent recipe: $agent_choice"
+    local temp_env
+    temp_env=$(mktemp)
+    (
+      AGENT_CLI=""
+      AGENT_CMD=""
+      AGENT_ARGS=""
+      MODEL_CLASS=""
+      source "$recipes_dir/agents/$agent_choice/agent.conf"
+      echo "new_cli=\"$AGENT_CLI\"" > "$temp_env"
+      echo "new_cmd=\"$AGENT_CMD\"" >> "$temp_env"
+      echo "new_args=\"$AGENT_ARGS\"" >> "$temp_env"
+      echo "new_model_class=\"$MODEL_CLASS\"" >> "$temp_env"
+    )
+    source "$temp_env"
+    rm -f "$temp_env"
+  else
+    read -r -p "Enter Agent CLI name (e.g. claude, codex, rtk): " new_cli
+    if [ -z "$new_cli" ]; then
+      echo "Aborted."
+      return 1
+    fi
+    read -r -p "Enter the command to run (e.g. 'sbx run my-project -- claude' or 'rtk'): " new_cmd
+    read -r -p "Enter extra arguments (optional): " new_args
+  fi
+
+  if [ -n "$new_cli" ]; then
+    local existing_cmd="" existing_args=""
+    if [ -f "$conf_file" ]; then
+      existing_cmd=$(grep "^AGENT_CMD_${new_cli//-/_}=" "$conf_file" | head -n1 | cut -d= -f2- | sed 's/^"\(.*\)"$/\1/')
+      existing_args=$(grep "^AGENT_ARGS_${new_cli//-/_}=" "$conf_file" | head -n1 | cut -d= -f2- | sed 's/^"\(.*\)"$/\1/')
+    fi
+
+    local do_write=1
     if [ -n "$existing_cmd" ]; then
-      sed -i.bak "/^AGENT_CMD_${new_cli//-/_}=/d" "$conf_file" 2>/dev/null || true
-      sed -i.bak "/^AGENT_ARGS_${new_cli//-/_}=/d" "$conf_file" 2>/dev/null || true
+      if [ "$existing_cmd" = "$new_cmd" ] && [ "$existing_args" = "$new_args" ]; then
+        do_write=0
+      else
+        read -r -p "AGENT_CMD_${new_cli//-/_} is already defined. Overwrite? (y/n) [n]: " overwrite_cmd
+        if [[ "$overwrite_cmd" != "y" && "$overwrite_cmd" != "Y" ]]; then
+          do_write=0
+        fi
+      fi
+    fi
+
+    if [ "$do_write" = 1 ]; then
+      if [ -n "$existing_cmd" ]; then
+        sed -i.bak "/^AGENT_CMD_${new_cli//-/_}=/d" "$conf_file" 2>/dev/null || true
+        sed -i.bak "/^AGENT_ARGS_${new_cli//-/_}=/d" "$conf_file" 2>/dev/null || true
+        rm -f "$conf_file.bak" 2>/dev/null || true
+      fi
+      echo "" >> "$conf_file"
+      echo "AGENT_CMD_${new_cli//-/_}=\"$new_cmd\"" >> "$conf_file"
+      if [ -n "$new_args" ]; then
+        echo "AGENT_ARGS_${new_cli//-/_}=\"$new_args\"" >> "$conf_file"
+      fi
+    fi
+
+    if [ -n "$new_model_class" ]; then
+      sed -i.bak '/^MODEL_CLASS=/d' "$conf_file" 2>/dev/null || true
       rm -f "$conf_file.bak" 2>/dev/null || true
-    fi
-    echo "" >> "$conf_file"
-    echo "AGENT_CMD_${new_cli//-/_}=\"$new_cmd\"" >> "$conf_file"
-    if [ -n "$new_args" ]; then
-      echo "AGENT_ARGS_${new_cli//-/_}=\"$new_args\"" >> "$conf_file"
-    fi
-  fi
-
-  local existing_default=""
-  if [ -f "$conf_file" ]; then
-    existing_default=$(grep "^DEFAULT_AGENT_CLI=" "$conf_file" | head -n1 | cut -d= -f2- | sed 's/^"\(.*\)"$/\1/')
-  fi
-
-  if [ "$existing_default" != "$new_cli" ]; then
-    read -r -p "Make '$new_cli' the default Agent CLI? (y/n) [y]: " make_default
-    if [[ -z "$make_default" || "$make_default" == "y" || "$make_default" == "Y" ]]; then
-      sed -i.bak '/^DEFAULT_AGENT_CLI=/d' "$conf_file" 2>/dev/null || true
-      rm -f "$conf_file.bak" 2>/dev/null || true
-      echo "DEFAULT_AGENT_CLI=\"$new_cli\"" >> "$conf_file"
-    fi
-  fi
-
-  if [ "$is_new" = 1 ] || ! grep -q '^TEST_CMD=' "$conf_file" 2>/dev/null; then
-    local default_test default_lint
-    default_test=$(detect_test_cmd)
-    default_lint=$(detect_lint_cmd)
-
-    echo
-    read -r -p "Enter TEST_CMD [$default_test]: " test_cmd
-    test_cmd="${test_cmd:-$default_test}"
-
-    read -r -p "Enter LINT_CMD [$default_lint]: " lint_cmd
-    lint_cmd="${lint_cmd:-$default_lint}"
-
-    if ! grep -q '^TEST_CMD=' "$conf_file" 2>/dev/null; then
-      echo "TEST_CMD=\"$test_cmd\"" >> "$conf_file"
-    else
-      sed -i.bak "s|^TEST_CMD=.*|TEST_CMD=\"$test_cmd\"|" "$conf_file" 2>/dev/null || true
+      echo "MODEL_CLASS=\"$new_model_class\"" >> "$conf_file"
     fi
 
-    if ! grep -q '^LINT_CMD=' "$conf_file" 2>/dev/null; then
-      echo "LINT_CMD=\"$lint_cmd\"" >> "$conf_file"
-    else
-      sed -i.bak "s|^LINT_CMD=.*|LINT_CMD=\"$lint_cmd\"|" "$conf_file" 2>/dev/null || true
+    local existing_default=""
+    if [ -f "$conf_file" ]; then
+      existing_default=$(grep "^DEFAULT_AGENT_CLI=" "$conf_file" | head -n1 | cut -d= -f2- | sed 's/^"\(.*\)"$/\1/')
     fi
-    rm -f "$conf_file.bak" 2>/dev/null || true
+
+    if [ "$existing_default" != "$new_cli" ]; then
+      read -r -p "Make '$new_cli' the default Agent CLI? (y/n) [y]: " make_default
+      if [[ -z "$make_default" || "$make_default" == "y" || "$make_default" == "Y" ]]; then
+        sed -i.bak '/^DEFAULT_AGENT_CLI=/d' "$conf_file" 2>/dev/null || true
+        rm -f "$conf_file.bak" 2>/dev/null || true
+        echo "DEFAULT_AGENT_CLI=\"$new_cli\"" >> "$conf_file"
+      fi
+    fi
   fi
 
   echo
