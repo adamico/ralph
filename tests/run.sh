@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # Run every tests/*_spec.sh in isolation.
 #
-# Safety: specs are expected to mock the agent (AGENT_CMD -> a fake binary), but
-# a bug or a future spec could leave AGENT_CMD pointing at a real agent CLI. A
-# real invocation with an empty $HOME triggers a live OAuth/browser flow
-# (notably `agy`/antigravity). To make a blanket run un-dangerous regardless of
-# any single spec, we:
-#   1. run each spec with an isolated, throwaway $HOME, and
-#   2. prepend a shim dir that shadows the real agent binaries on $PATH with
-#      stubs that fail loudly instead of authenticating.
+# Safety + isolation: specs are expected to mock the agent (AGENT_CMD -> a fake
+# binary), but a bug or a future spec could leave AGENT_CMD pointing at a real
+# agent CLI. A real invocation with an empty $HOME triggers a live OAuth/browser
+# flow (notably `agy`/antigravity). Specs also `. bin/ralph`, which sources
+# `./.ralph.conf` (bin/ralph:513) from the current directory — so running from
+# the repo root leaks the developer's local config (e.g. AGENT_CMD_claude) into
+# resolution and fails otherwise-correct assertions. To make a blanket run both
+# un-dangerous and reproducible regardless of any single spec, we run each spec:
+#   1. from a throwaway empty cwd (no local ./.ralph.conf is picked up),
+#   2. with an isolated, throwaway $HOME, and
+#   3. with a shim dir prepended to $PATH that shadows the real agent binaries
+#      with stubs that fail loudly instead of authenticating.
+# Specs locate bin/ralph via an absolute path derived from $0, so cwd is free.
 #
 # Usage: tests/run.sh [spec_name ...]   (default: all *_spec.sh)
 set -uo pipefail
@@ -48,7 +53,9 @@ fails=0
 for spec in "${specs[@]}"; do
   name="$(basename "$spec")"
   home="$(mktemp -d)"
-  if HOME="$home" PATH="$SHIM:$PATH" bash "$spec" >/tmp/ralph-spec.$$ 2>&1; then
+  cwd="$(mktemp -d)"
+  spec_abs="$(cd "$(dirname "$spec")" && pwd)/$(basename "$spec")"
+  if ( cd "$cwd" && HOME="$home" PATH="$SHIM:$PATH" bash "$spec_abs" ) >/tmp/ralph-spec.$$ 2>&1; then
     echo "ok   $name"
   else
     rc=$?
@@ -56,7 +63,7 @@ for spec in "${specs[@]}"; do
     sed 's/^/    /' /tmp/ralph-spec.$$
     fails=$((fails+1))
   fi
-  rm -rf "$home"
+  rm -rf "$home" "$cwd"
 done
 rm -f /tmp/ralph-spec.$$
 
