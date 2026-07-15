@@ -1,6 +1,6 @@
 # DragonRuby Recipe
 
-Bundled recipe for the ralph-init skill: sandbox template build + dual-mode test harness for DragonRuby ports.
+Environment recipe for native `ralph init` (ADR-0013): sandbox template build + dual-mode test harness for DragonRuby ports.
 
 ## Contents
 

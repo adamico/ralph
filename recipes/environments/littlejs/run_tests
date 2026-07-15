@@ -19,8 +19,8 @@ set -eu
 #
 # Usage: ./run_tests test | lint
 #
-# The skill substitutes the <ENGINE> prefix (e.g. LITTLEJS_/OBSI_) when it
-# instantiates this recipe for a port. This template uses LITTLEJS_.
+# Env-var prefix is LITTLEJS_ (e.g. LITTLEJS_TEST_SOURCE). Rename the prefix
+# per-port if adapting this recipe for another engine.
 
 MODE="${1:-test}"
 SRC="${LITTLEJS_TEST_SOURCE:-remote}"

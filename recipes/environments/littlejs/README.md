@@ -1,6 +1,6 @@
 # LittleJS Recipe
 
-Bundled recipe for the ralph-init skill: sandbox + dual-mode test harness for
+Environment recipe for native `ralph init` (ADR-0013): sandbox + dual-mode test harness for
 LittleJS (node/vitest) ports. Standard-tier sibling of the *mature-external*
 dragonruby recipe (imported from `adamico/locomotion`). First built in
 `adamico/obsi` at `build/littlejs/`.
