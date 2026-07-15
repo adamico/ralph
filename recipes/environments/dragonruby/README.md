@@ -30,20 +30,31 @@ For a new DragonRuby port:
    Set `AGENT_CLI=claude` only when intentionally using the legacy Claude-oriented import.
 6. Test: `DR_TEST_SOURCE=local ./run_tests` (or `DR_TEST_SOURCE=remote ./run_tests` in CI)
 
-## Generated ralph config shape
+## What this recipe contributes
+
+`ralph init` appends this recipe's `env.conf` to `.ralph.conf` and copies the
+non-doc files (`build.sh`, `dr-update-sandbox`, `run_tests`) into the project.
+`env.conf` sets only the test/lint harness:
 
 ```bash
-AGENT_CLI="codex"                     # claude | codex | pi
-AGENT_CMD="sbx run <repo>-dragonruby -- codex"
-AGENT_ARGS=""
-MODEL_CLASS="low"
-# MODEL="gpt-5.4-mini"
 TEST_CMD="DR_TEST_SOURCE=remote ./run_tests"
 LINT_CMD="bundle exec rubocop"
 ```
 
-New generated configs use Agent CLI vocabulary. `CLAUDE_CMD` is legacy
-compatibility only and should not be emitted by this recipe.
+The `AGENT_*` / `MODEL_CLASS` lines come from a separate **agent recipe**
+(`recipes/agents/`), which you pick in the same `ralph init` run — e.g.
+`codex-docker` yields:
+
+```bash
+AGENT_CLI="codex"                     # claude | codex | pi | antigravity
+AGENT_CMD="sbx run codex --"
+AGENT_ARGS=""
+MODEL_CLASS="low"
+# MODEL="gpt-5.4-mini"
+```
+
+Configs use Agent CLI vocabulary. `CLAUDE_CMD` is legacy compatibility only and
+is not emitted by any recipe.
 
 ## Assumptions
 

@@ -23,36 +23,40 @@ dragonruby recipe (imported from `adamico/locomotion`). First built in
    ```bash
    echo "$OPENAI_API_KEY" | sbx secret set -g openai
    ```
-3. Run `./build.sh` to create the `<repo>-littlejs` sandbox. Set `AGENT_CLI=claude` or `AGENT_CLI=pi` first only when intentionally using a non-Codex adapter.
-4. The skill generates a `.ralph.conf` (below).
+3. Run `./build.sh` to create the `<repo>-littlejs` sandbox.
+4. Run `ralph init` and pick this environment + an agent recipe (below).
 
-## Configuration
+## What this recipe contributes
 
-The skill generates a `.ralph.conf` for the port with:
+`ralph init` appends this recipe's `env.conf` to `.ralph.conf` and copies
+`build.sh` / `run_tests` into the project. `env.conf` sets only the harness:
+
+```bash
+TEST_CMD="LITTLEJS_TEST_SOURCE=remote ./run_tests test"
+LINT_CMD="LITTLEJS_TEST_SOURCE=remote ./run_tests lint"
+```
+
+`LITTLEJS_` is the env-var prefix; rename it per-port if adapting the recipe for
+another engine. `TEST_CMD`/`LINT_CMD` are **prompt text** ralph interpolates
+into the agent's prompt — ralph never executes them; the agent does.
+
+The `AGENT_*` / `MODEL_CLASS` lines come from a separate **agent recipe**
+(`recipes/agents/`) chosen in the same `ralph init` run — e.g. `codex-docker`:
 
 ```bash
 AGENT_CLI="codex"
-AGENT_CMD="sbx run <repo>-littlejs -- codex"
+AGENT_CMD="sbx run codex --"
 AGENT_ARGS=""
 MODEL_CLASS="low"
 # MODEL="gpt-5.4-mini"
-TEST_CMD="<ENGINE>_TEST_SOURCE=remote <abs-path>/run_tests test"
-LINT_CMD="<ENGINE>_TEST_SOURCE=remote <abs-path>/run_tests lint"
 ```
 
-`<ENGINE>` is the port prefix (e.g. `LITTLEJS_` / `OBSI_`). `TEST_CMD`/`LINT_CMD`
-are **prompt text** ralph interpolates into the agent's prompt — ralph never
-executes them; the agent does. Use an absolute path because the agent's cwd in
-the sandbox is not the mount.
-
-New generated configs use Agent CLI vocabulary (`AGENT_CLI`, `AGENT_CMD`,
-`AGENT_ARGS`, `MODEL_CLASS`, optional `MODEL`). Legacy `CLAUDE_CMD` is not
-emitted by this recipe; existing Claude-only configs should be treated as
-compatibility-mode examples.
+Configs use Agent CLI vocabulary. Legacy `CLAUDE_CMD` is not emitted by any
+recipe; existing Claude-only configs are compatibility-mode examples.
 
 ## Test model (B) — push before green
 
-`run_tests` is dual-mode via `<ENGINE>_TEST_SOURCE`:
+`run_tests` is dual-mode via `LITTLEJS_TEST_SOURCE`:
 
 - `local` — runs vitest/eslint on the host workspace in place; picks up
   uncommitted WIP. Fast human iteration.
@@ -62,8 +66,8 @@ compatibility-mode examples.
 
 **Remote mode tests `origin/<branch>`, so the agent must commit AND push before
 tests reflect its changes** (ADR-0022, locomotion: "WIP must be pushed to be
-testable"). The generated `.ralph.conf` header states this contract so the
-low-cost agent reads it.
+testable"). Surface this contract to the low-cost agent in the PRD/issue text,
+since `env.conf` only carries `TEST_CMD`/`LINT_CMD`.
 
 ## Assumptions
 
