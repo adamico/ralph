@@ -24,6 +24,24 @@ PREFIX=/usr/local ./install.sh  # → /usr/local/bin/ralph
 
 Requires: bash, git. GitHub backend additionally needs `gh` and `jq`.
 
+`install.sh` also symlinks the bundled recipes to `~/.ralph/recipes/`, which
+`ralph init` reads (see [Setup with `ralph init`](#setup-with-ralph-init)).
+
+## Setup with `ralph init`
+
+From your project root, run `ralph init` for guided setup. It combines two
+recipes from `~/.ralph/recipes/` (see [`recipes/README.md`](recipes/README.md))
+to write `.ralph.conf` and copy any test/build harness files:
+
+- an **environment** recipe (`dragonruby`, `littlejs`, `python-pytest`, …) —
+  sets `TEST_CMD` / `LINT_CMD` and drops in `run_tests` / build scripts. The
+  environment is auto-detected where possible (e.g. `app/main.rb` → dragonruby).
+- an **agent** recipe (`claude-local`, `claude-docker`, `codex-docker`,
+  `rtk-local`, …) — sets `AGENT_CLI` / `AGENT_CMD` / `MODEL_CLASS`.
+
+Missing recipes fall back to manual entry. You can still hand-write
+`.ralph.conf` as in the quickstarts below.
+
 ## Quickstart — fs backend
 
 ```bash
@@ -70,6 +88,7 @@ is closed.
 
 | Command                       | Behavior                                                       |
 |-------------------------------|----------------------------------------------------------------|
+| `ralph init`                  | Interactive setup: pick an environment + agent recipe, write `.ralph.conf`. |
 | `ralph once [<milestone>]`    | One iteration. Exit 20 = COMPLETE, 21 = BLOCKED.               |
 | `ralph run <N> [<milestone>]` | Up to N iterations; halts on COMPLETE / BLOCKED / failure.     |
 | `ralph ls`                    | List PRDs (fs) or open milestones (github).                    |
@@ -83,7 +102,7 @@ is closed.
 ## Agent CLI and sandboxing
 
 A ralph engagement uses one configured **Agent CLI**. `AGENT_CLI` selects the
-adapter (`claude`, `codex`, or `pi`), `AGENT_CMD` supplies the executable or
+adapter (`claude`, `codex`, `pi`, or `antigravity`), `AGENT_CMD` supplies the executable or
 wrapper, and `AGENT_ARGS` carries optional extra adapter arguments.
 `MODEL_CLASS=low` selects adapter defaults (`claude` -> `sonnet`, `codex` ->
 `gpt-5.4-mini`); set `MODEL` to override explicitly. Pi relies on external provider
@@ -110,7 +129,7 @@ when both set.
 
 | Key              | Default                          | Meaning                                       |
 |------------------|----------------------------------|-----------------------------------------------|
-| `AGENT_CLI`     | `claude`                         | Agent CLI adapter: `claude`, `codex`, or `pi`. |
+| `AGENT_CLI`     | `claude`                         | Agent CLI adapter: `claude`, `codex`, `pi`, or `antigravity`. |
 | `AGENT_CMD`     | value of `AGENT_CLI`              | Executable or wrapper for the Agent CLI.      |
 | `AGENT_ARGS`    | empty                             | Optional extra adapter args.                  |
 | `MODEL_CLASS`   | `low`                             | Model Class; maps to adapter defaults.        |
@@ -143,6 +162,14 @@ when both set.
 
 ## Tests
 
+Run the whole suite through the guarded runner:
+
 ```bash
-bash tests/pick_next_issue_spec.sh
+bash tests/run.sh                       # all specs
+bash tests/run.sh cmd_init pick_next_issue   # named specs
 ```
+
+`tests/run.sh` runs each spec from a throwaway cwd and `$HOME` with a PATH
+shim over the agent binaries, so a run never picks up your local `.ralph.conf`
+or triggers a real agent login. Avoid a raw `for s in tests/*_spec.sh` from the
+repo root — it leaks local config into resolution assertions.
