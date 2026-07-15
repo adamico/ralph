@@ -15,7 +15,7 @@ Usage:
   ralph recover [<milestone>]        # print recovery runbook for interrupted iteration
   ralph kill                         # pkill ralph + stop sandbox
 EOF
-  exit 1
+  exit "${1:-1}"
 }
 
 # Threshold (seconds CPU time) above which a sandbox child process is
@@ -1767,9 +1767,9 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-set -- "${new_args[@]}"
+set -- "${new_args[@]+"${new_args[@]}"}"
 
-[ $# -ge 1 ] || usage
+[ $# -ge 1 ] || usage 0
 
 case "$1" in
   init)   cmd_init;   exit $? ;;
@@ -1810,6 +1810,6 @@ case "$1" in
       esac
     done
     ;;
-  -h|--help) usage ;;
+  -h|--help) usage 0 ;;
   *) usage ;;
 esac
